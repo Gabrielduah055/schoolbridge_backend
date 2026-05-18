@@ -2,9 +2,9 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 import multer from 'multer';
 import * as XLSX from 'xlsx';
-import Student from '../models/students';
+import Student from '../models/Students';
 import User from '../models/User';
-import Fee from '../models/fee';
+import Fee from '../models/Fee';
 
 const router = Router();
 const upload = multer({ dest: './uploads/' });

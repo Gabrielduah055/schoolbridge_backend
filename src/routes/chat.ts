@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { chatWithSchoolAgent } from '../agents/schoolAgent';
-import Conversation from '../models/conversation';
+import Conversation from '../models/Conversation';
 
 const router = Router();
 const conversations = new Map<string, any[]>();

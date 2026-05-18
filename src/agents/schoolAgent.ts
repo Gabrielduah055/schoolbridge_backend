@@ -1,7 +1,7 @@
 import Knowledge from '../models/Knowledge';
-import Student from '../models/students';
+import Student from '../models/Students';
 import User from '../models/User';
-import Fee from '../models/fee';
+import Fee from '../models/Fee';
 
 interface Message {
   role: 'user' | 'assistant';
