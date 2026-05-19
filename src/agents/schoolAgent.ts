@@ -19,6 +19,8 @@ interface OpenRouterResponse {
   };
 }
 
+type StudentRecord = Record<string, any>;
+
 export const OPENROUTER_MODELS = {
   best: 'anthropic/claude-sonnet-4.5',
   fast: 'anthropic/claude-haiku-4.5',
@@ -75,10 +77,73 @@ PARENT'S CHILD:
 Name: ${student.name}
 Class: ${student.class}
 Admission Number: ${student.admissionNumber}
+Gender: ${student.gender || 'Not recorded'}
+Age: ${student.age || 'Not recorded'}
+Admission Status: ${student.admissionStatus || 'Not recorded'}
+Parent/Guardian: ${student.parentName || 'Not recorded'}
+Emergency Contact: ${student.emergencyContactName || 'Not recorded'} ${student.emergencyContactPhone || ''}
+Medical Condition: ${student.medicalCondition || 'None recorded'}
+Allergies: ${student.allergies || 'None recorded'}
+Medication Required: ${student.medicationRequired || 'None recorded'}
+Special Learning Need: ${student.specialLearningNeed || 'None recorded'}
+Transport Needed: ${student.transportNeeded ? 'Yes' : 'No'}
+Feeding Service: ${student.feedingService ? 'Yes' : 'No'}
 Fee Status: ${fee ? fee.status : 'No fee record'}
 Amount Paid: GHS ${fee ? fee.amountPaid : 0}
 Outstanding: GHS ${fee ? fee.outstanding : 0}
   `;
+};
+
+const compact = (value: unknown): string => {
+  if (value === undefined || value === null || value === '') return 'Not recorded';
+  if (value instanceof Date) return value.toISOString().slice(0, 10);
+  return String(value).trim() || 'Not recorded';
+};
+
+const yesNo = (value: unknown): string => value ? 'Yes' : 'No';
+
+const formatStudentRecord = (student: StudentRecord): string => {
+  const docs = student.admissionDocuments || {};
+
+  return [
+    `- ${compact(student.name)} (${compact(student.admissionNumber)})`,
+    `Class: ${compact(student.class)} | Gender: ${compact(student.gender)} | Age: ${compact(student.age)} | DOB: ${compact(student.dateOfBirth)}`,
+    `Admission: ${compact(student.admissionType)} / ${compact(student.admissionStatus)}`,
+    `Parent/Guardian: ${compact(student.parentName)} (${compact(student.relationship)}) | Phone: ${compact(student.parentPhone)} | Alt: ${compact(student.parentPhone2)} | Email: ${compact(student.parentEmail)}`,
+    `Residence: ${compact(student.residentialArea)} | Emergency: ${compact(student.emergencyContactName)} ${compact(student.emergencyContactPhone)}`,
+    `Health: ${compact(student.medicalCondition)} | Allergies: ${compact(student.allergies)} | Medication: ${compact(student.medicationRequired)} | Blood: ${compact(student.bloodGroup)} | Doctor/Hospital: ${compact(student.doctorHospitalContact)}`,
+    `Support: ${compact(student.specialLearningNeed)} | Transport: ${yesNo(student.transportNeeded)} | Feeding: ${yesNo(student.feedingService)}`,
+    `Documents: Birth Certificate=${compact(docs.birthCertificate)}, Photos=${compact(docs.passportPhotos)}, Report=${compact(docs.previousSchoolReport)}, Transfer=${compact(docs.transferLetter)}, Health=${compact(docs.healthImmunizationRecord)}, Parent ID=${compact(docs.parentGuardianId)}, Emergency Details=${compact(docs.emergencyContactDetails)}, Other=${compact(docs.otherDocuments)}`,
+    `Notes: ${compact(student.notes)}`
+  ].join('\n');
+};
+
+const getStudentRecordsContext = async (userRole: string): Promise<string> => {
+  if (!['admin', 'teacher'].includes(userRole)) {
+    return '';
+  }
+
+  const students = await Student.find({ status: 'active' })
+    .sort({ class: 1, name: 1 })
+    .limit(250)
+    .lean();
+
+  if (students.length === 0) {
+    return 'No imported student records are available yet.';
+  }
+
+  const classCounts = students.reduce<Record<string, number>>((counts, student: StudentRecord) => {
+    const className = compact(student.class);
+    counts[className] = (counts[className] || 0) + 1;
+    return counts;
+  }, {});
+
+  return [
+    `IMPORTED STUDENT RECORDS (${students.length} active students available to ${userRole}s):`,
+    `Class counts: ${Object.entries(classCounts).map(([name, count]) => `${name}: ${count}`).join(', ')}`,
+    '',
+    ...students.map((student) => formatStudentRecord(student))
+  ].join('\n');
 };
 
 export const getSystemPrompt = async (
@@ -91,6 +156,7 @@ export const getSystemPrompt = async (
   const studentInfo = userRole === 'parent' 
     ? await getStudentInfo(userPhone) 
     : '';
+  const studentRecords = await getStudentRecordsContext(userRole);
 
   return `You are SchoolBridge, the official AI assistant 
 for ${process.env.SCHOOL_NAME}. You are intelligent, 
@@ -102,15 +168,17 @@ Role: ${userRole}
 Phone: ${userPhone}
 
 ${studentInfo ? `CHILD INFORMATION:\n${studentInfo}` : ''}
+${studentRecords ? `AUTHORIZED STUDENT RECORDS:\n${studentRecords}` : ''}
 
 SCHOOL KNOWLEDGE BASE:
 ${schoolKnowledge}
 
 YOUR RULES:
-- Answer ONLY from the school knowledge base above
+- Answer ONLY from the school knowledge base and authorized student records above
 - For parents: give personalized info about THEIR child only
 - For teachers: help them communicate with parents
 - For admins: help with school management tasks
+- Parents must never receive another student's record, medical detail, contact, or fee detail
 - If you don't know something: say 
   "I don't have that information yet. 
   Please contact the school office directly."
@@ -141,7 +209,7 @@ ADMIN GUIDELINES:
 - Help with school management tasks
 - Generate reports when asked
 - Send announcements when instructed
-- Provide school statistics and insights
+- Provide school statistics and insights from imported student records when available
 ` : ''}`;
 };
 
