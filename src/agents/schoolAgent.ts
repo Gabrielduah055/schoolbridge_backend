@@ -8,10 +8,57 @@ interface Message {
   content: string;
 }
 
+interface OpenRouterResponse {
+  choices?: Array<{
+    message?: {
+      content?: string;
+    };
+  }>;
+  error?: {
+    message?: string;
+  };
+}
+
+export const OPENROUTER_MODELS = {
+  best: 'anthropic/claude-sonnet-4.5',
+  fast: 'anthropic/claude-haiku-4.5',
+  cheap: 'qwen/qwen3-235b-a22b',
+  gpt: 'openai/gpt-4o',
+  flash: 'google/gemini-2.5-flash-lite',
+  free: 'meta-llama/llama-3.3-70b-instruct'
+} as const;
+
+export type OpenRouterModelKey = keyof typeof OPENROUTER_MODELS;
+
+export const resolveOpenRouterModel = (modelKey?: string): string => {
+  if (!modelKey) {
+    return process.env.OPENROUTER_MODEL || OPENROUTER_MODELS.best;
+  }
+
+  if (modelKey in OPENROUTER_MODELS) {
+    return OPENROUTER_MODELS[modelKey as OpenRouterModelKey];
+  }
+
+  const allowedModel = Object.values(OPENROUTER_MODELS).find(model => model === modelKey);
+  return allowedModel || process.env.OPENROUTER_MODEL || OPENROUTER_MODELS.best;
+};
+
 const getSchoolKnowledge = async (): Promise<string> => {
   const docs = await Knowledge.find({ isActive: true });
-  if (docs.length === 0) return 'No school documents uploaded yet.';
-  return docs.map(d => `[${d.category}]\n${d.content}`).join('\n\n');
+  
+  if (docs.length === 0) {
+    return 'No school documents have been uploaded yet. Please upload school documents from the Knowledge Base page.';
+  }
+
+  let knowledge = `SCHOOL KNOWLEDGE BASE (${docs.length} documents):\n\n`;
+  
+  docs.forEach(doc => {
+    knowledge += `--- ${doc.category.toUpperCase().replace(/_/g, ' ')} ---\n`;
+    knowledge += `File: ${doc.fileName}\n`;
+    knowledge += `${doc.content}\n\n`;
+  });
+
+  return knowledge;
 };
 
 const getStudentInfo = async (parentPhone: string): Promise<string> => {
@@ -102,25 +149,34 @@ export const chatWithSchoolAgent = async (
   messages: Message[],
   userRole: string,
   userPhone: string,
-  userName: string
+  userName: string,
+  modelKey?: string
 ): Promise<string> => {
+
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) {
+    throw new Error('OPENROUTER_API_KEY is not configured.');
+  }
 
   const systemPrompt = await getSystemPrompt(
     userRole, 
     userPhone, 
     userName
   );
+  const model = resolveOpenRouterModel(modelKey);
 
   const response = await fetch(
     'https://openrouter.ai/api/v1/chat/completions',
     {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        'Authorization': `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
+        'HTTP-Referer': 'https://schoolbridge-backend.onrender.com',
+        'X-Title': 'SchoolBridge'
       },
       body: JSON.stringify({
-        model: 'anthropic/claude-sonnet-4-5',
+        model,
         messages: [
           { role: 'system', content: systemPrompt },
           ...messages
@@ -130,6 +186,16 @@ export const chatWithSchoolAgent = async (
     }
   );
 
-  const data = await response.json();
-  return data.choices[0].message.content;
+  const data = await response.json() as OpenRouterResponse;
+
+  if (!response.ok) {
+    throw new Error(data.error?.message || `OpenRouter request failed with status ${response.status}`);
+  }
+
+  const content = data.choices?.[0]?.message?.content;
+  if (!content) {
+    throw new Error('OpenRouter returned an empty response.');
+  }
+
+  return content;
 };

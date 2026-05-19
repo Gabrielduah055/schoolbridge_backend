@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
-import { chatWithSchoolAgent } from '../agents/schoolAgent';
+import { chatWithSchoolAgent, resolveOpenRouterModel } from '../agents/schoolAgent';
 import Conversation from '../models/Conversation';
 
 const router = Router();
@@ -13,8 +13,19 @@ router.post('/message', async (req: Request, res: Response) => {
       message, 
       userRole = 'parent',
       userPhone = 'dashboard-test',
-      userName = 'Test User'
+      userName = 'Test User',
+      taskType,
+      modelKey,
+      model
     } = req.body;
+
+    if (!sessionId || !message) {
+      res.status(400).json({ error: 'sessionId and message are required' });
+      return;
+    }
+
+    const selectedModelKey = modelKey || taskType || model;
+    const selectedModel = resolveOpenRouterModel(selectedModelKey);
 
     if (!conversations.has(sessionId)) {
       conversations.set(sessionId, []);
@@ -27,7 +38,8 @@ router.post('/message', async (req: Request, res: Response) => {
       history,
       userRole,
       userPhone,
-      userName
+      userName,
+      selectedModelKey
     );
 
     history.push({ role: 'assistant', content: aiResponse });
@@ -60,12 +72,13 @@ router.post('/message', async (req: Request, res: Response) => {
 
     res.json({
       response: aiResponse,
-      sessionId
+      sessionId,
+      model: selectedModel
     });
 
-  } catch (error) {
+  } catch (error: any) {
     console.error('Chat error:', error);
-    res.status(500).json({ error: 'Something went wrong' });
+    res.status(500).json({ error: error.message || 'Something went wrong' });
   }
 });
 
