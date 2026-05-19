@@ -69,6 +69,27 @@ const toNumber = (value: any) => {
   const numeric = Number(toText(value).replace(/[^\d.-]/g, ''));
   return Number.isFinite(numeric) ? numeric : 0;
 };
+const toBoolean = (value: any) => {
+  const text = toText(value).toLowerCase();
+  return ['yes', 'y', 'true', '1', 'needed', 'required'].includes(text);
+};
+const toDate = (value: any): Date | null => {
+  if (value === undefined || value === null || value === '') return null;
+
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value;
+  }
+
+  if (typeof value === 'number') {
+    const parsed = XLSX.SSF.parse_date_code(value);
+    if (parsed) {
+      return new Date(parsed.y, parsed.m - 1, parsed.d);
+    }
+  }
+
+  const date = new Date(toText(value));
+  return Number.isNaN(date.getTime()) ? null : date;
+};
 
 // Get all students
 router.get('/', async (req: Request, res: Response) => {
@@ -163,14 +184,42 @@ router.post('/import', upload.single('file'),
     for (const [index, row] of data.entries()) {
       try {
         const rowNumber = index + 2;
-        const name = toText(getColumnValue(row, ['Student Name', 'Name', 'name', 'STUDENT NAME']));
+        const name = toText(getColumnValue(row, ['Student Name', 'Full Name', 'Name', 'name', 'STUDENT NAME']));
         const studentClass = toText(getColumnValue(row, ['Class', 'class', 'CLASS']));
-        const admissionNumber = toText(getColumnValue(row, ['Admission No', 'Admission Number', 'admissionNumber']));
-        const parentName = toText(getColumnValue(row, ['Parent Name', 'parentName', 'PARENT NAME']));
-        const parentPhone = toText(getColumnValue(row, ['Parent Phone', 'parentPhone', 'PARENT PHONE', 'Phone']));
+        const admissionNumber = toText(getColumnValue(row, ['Admission No', 'Admission Number', 'admissionNumber', 'Student ID', 'StudentID']));
+        const parentName = toText(getColumnValue(row, ['Parent Name', 'Parent/Guardian Name', 'Guardian Name', 'parentName', 'PARENT NAME']));
+        const parentPhone = toText(getColumnValue(row, ['Parent Phone', 'Parent Contact 1', 'Primary Parent Phone', 'parentPhone', 'PARENT PHONE', 'Phone']));
+        const parentPhone2 = toText(getColumnValue(row, ['Parent Contact 2', 'Secondary Parent Phone', 'parentPhone2']));
         const parentEmail = toText(getColumnValue(row, ['Parent Email', 'parentEmail', 'Email']));
         const age = toNumber(getColumnValue(row, ['Age', 'age']));
         const termFee = toNumber(getColumnValue(row, ['Term Fee', 'termFee', 'Fee']));
+        const gender = toText(getColumnValue(row, ['Gender', 'gender']));
+        const dateOfBirth = toDate(getColumnValue(row, ['Date of Birth', 'DOB', 'dateOfBirth']));
+        const admissionType = toText(getColumnValue(row, ['Admission Type', 'admissionType']));
+        const admissionStatus = toText(getColumnValue(row, ['Admission Status', 'admissionStatus']));
+        const relationship = toText(getColumnValue(row, ['Relationship', 'Parent Relationship', 'Guardian Relationship']));
+        const residentialArea = toText(getColumnValue(row, ['Residential Area', 'Address', 'residentialArea']));
+        const emergencyContactName = toText(getColumnValue(row, ['Emergency Contact Name', 'emergencyContactName']));
+        const emergencyContactPhone = toText(getColumnValue(row, ['Emergency Contact Phone', 'emergencyContactPhone']));
+        const medicalCondition = toText(getColumnValue(row, ['Medical Condition', 'medicalCondition']));
+        const allergies = toText(getColumnValue(row, ['Allergies', 'allergies']));
+        const medicationRequired = toText(getColumnValue(row, ['Medication Required', 'medicationRequired']));
+        const bloodGroup = toText(getColumnValue(row, ['Blood Group', 'bloodGroup']));
+        const doctorHospitalContact = toText(getColumnValue(row, ['Doctor/Hospital Contact', 'Doctor Hospital Contact', 'doctorHospitalContact']));
+        const specialLearningNeed = toText(getColumnValue(row, ['Special Learning Need', 'specialLearningNeed']));
+        const transportNeeded = toBoolean(getColumnValue(row, ['Transport Needed', 'transportNeeded']));
+        const feedingService = toBoolean(getColumnValue(row, ['Feeding Service', 'feedingService']));
+        const notes = toText(getColumnValue(row, ['Notes', 'notes']));
+        const admissionDocuments = {
+          birthCertificate: toText(getColumnValue(row, ['Birth Certificate', 'birthCertificate'])),
+          passportPhotos: toText(getColumnValue(row, ['Passport Photos', 'passportPhotos'])),
+          previousSchoolReport: toText(getColumnValue(row, ['Previous School Report', 'previousSchoolReport'])),
+          transferLetter: toText(getColumnValue(row, ['Transfer Letter', 'transferLetter'])),
+          healthImmunizationRecord: toText(getColumnValue(row, ['Health/Immunization Record', 'Health Immunization Record', 'healthImmunizationRecord'])),
+          parentGuardianId: toText(getColumnValue(row, ['Parent/Guardian ID', 'Parent Guardian ID', 'parentGuardianId'])),
+          emergencyContactDetails: toText(getColumnValue(row, ['Emergency Contact Details', 'emergencyContactDetails'])),
+          otherDocuments: toText(getColumnValue(row, ['Other Documents', 'otherDocuments']))
+        };
 
         if (!name || !studentClass) {
           errors.push(`Row ${rowNumber} skipped - missing student name or class`);
@@ -193,9 +242,28 @@ router.post('/import', upload.single('file'),
           admissionNumber,
           class: studentClass,
           age,
+          gender,
+          dateOfBirth,
+          admissionType,
+          admissionStatus,
           parentName,
           parentPhone,
+          parentPhone2,
           parentEmail,
+          relationship,
+          residentialArea,
+          emergencyContactName,
+          emergencyContactPhone,
+          medicalCondition,
+          allergies,
+          medicationRequired,
+          bloodGroup,
+          doctorHospitalContact,
+          specialLearningNeed,
+          transportNeeded,
+          feedingService,
+          notes,
+          admissionDocuments,
           status: 'active'
         });
         await student.save();
