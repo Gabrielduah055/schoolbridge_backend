@@ -15,8 +15,16 @@ interface OpenRouterResponse {
     };
   }>;
   error?: {
+    code?: string | number;
     message?: string;
+    metadata?: {
+      provider_name?: string;
+      raw?: unknown;
+      [key: string]: unknown;
+    };
   };
+  provider?: string;
+  model?: string;
 }
 
 type StudentRecord = Record<string, any>;
@@ -27,14 +35,19 @@ export const OPENROUTER_MODELS = {
   cheap: 'qwen/qwen3-235b-a22b',
   gpt: 'openai/gpt-4o',
   flash: 'google/gemini-2.5-flash-lite',
-  free: 'meta-llama/llama-3.3-70b-instruct'
+  free: 'meta-llama/llama-3.3-70b-instruct:free'
 } as const;
 
 export type OpenRouterModelKey = keyof typeof OPENROUTER_MODELS;
 
+const DEFAULT_OPENROUTER_FALLBACK_MODELS = [
+  'openrouter/owl-alpha',
+  'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free'
+];
+
 export const resolveOpenRouterModel = (modelKey?: string): string => {
   if (!modelKey) {
-    return process.env.OPENROUTER_MODEL || OPENROUTER_MODELS.best;
+    return process.env.OPENROUTER_MODEL || OPENROUTER_MODELS.free;
   }
 
   if (modelKey in OPENROUTER_MODELS) {
@@ -42,7 +55,53 @@ export const resolveOpenRouterModel = (modelKey?: string): string => {
   }
 
   const allowedModel = Object.values(OPENROUTER_MODELS).find(model => model === modelKey);
-  return allowedModel || process.env.OPENROUTER_MODEL || OPENROUTER_MODELS.best;
+  return allowedModel || process.env.OPENROUTER_MODEL || OPENROUTER_MODELS.free;
+};
+
+const getOpenRouterFallbackModels = (primaryModel: string): string[] => {
+  const configuredFallbacks = (process.env.OPENROUTER_FALLBACK_MODELS || '')
+    .split(',')
+    .map(model => model.trim())
+    .filter(Boolean);
+
+  return Array.from(new Set([
+    primaryModel,
+    ...configuredFallbacks,
+    ...DEFAULT_OPENROUTER_FALLBACK_MODELS
+  ]));
+};
+
+const stringifyForLog = (value: unknown): string => {
+  if (value === undefined) return '';
+  if (typeof value === 'string') return value;
+
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+};
+
+const buildOpenRouterError = (
+  response: Response,
+  data: OpenRouterResponse,
+  model: string
+): Error => {
+  const provider = data.error?.metadata?.provider_name || data.provider || 'unknown provider';
+  const rawProviderError = stringifyForLog(data.error?.metadata?.raw);
+  const details = [
+    `OpenRouter request failed for ${model}`,
+    `status=${response.status}`,
+    `code=${data.error?.code || 'unknown'}`,
+    `provider=${provider}`,
+    `message=${data.error?.message || 'No error message returned'}`
+  ];
+
+  if (rawProviderError) {
+    details.push(`raw=${rawProviderError.slice(0, 500)}`);
+  }
+
+  return new Error(details.join(' | '));
 };
 
 const getSchoolKnowledge = async (): Promise<string> => {
@@ -232,38 +291,63 @@ export const chatWithSchoolAgent = async (
     userName
   );
   const model = resolveOpenRouterModel(modelKey);
+  const modelsToTry = getOpenRouterFallbackModels(model);
+  let lastError: Error | null = null;
 
-  const response = await fetch(
-    'https://openrouter.ai/api/v1/chat/completions',
-    {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-        'HTTP-Referer': 'https://schoolbridge-backend.onrender.com',
-        'X-Title': 'SchoolBridge'
-      },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          ...messages
-        ],
-        max_tokens: 1000,
-      }),
+  for (const modelToTry of modelsToTry) {
+    let response: Response;
+    let data: OpenRouterResponse;
+
+    try {
+      response = await fetch(
+        'https://openrouter.ai/api/v1/chat/completions',
+        {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': 'https://schoolbridge-backend.onrender.com',
+            'X-Title': 'SchoolBridge'
+          },
+          body: JSON.stringify({
+            model: modelToTry,
+            messages: [
+              { role: 'system', content: systemPrompt },
+              ...messages
+            ],
+            max_tokens: 400,
+          }),
+        }
+      );
+
+      data = await response.json() as OpenRouterResponse;
+    } catch (error) {
+      lastError = error instanceof Error
+        ? error
+        : new Error(`OpenRouter network request failed for ${modelToTry}.`);
+      console.error(`OpenRouter network request failed for ${modelToTry}: ${lastError.message}`);
+      continue;
     }
-  );
 
-  const data = await response.json() as OpenRouterResponse;
+    if (!response.ok || data.error) {
+      lastError = buildOpenRouterError(response, data, modelToTry);
+      console.error(lastError.message);
+      continue;
+    }
 
-  if (!response.ok) {
-    throw new Error(data.error?.message || `OpenRouter request failed with status ${response.status}`);
+    const content = data.choices?.[0]?.message?.content;
+    if (!content) {
+      lastError = new Error(`OpenRouter returned an empty response for ${modelToTry}.`);
+      console.error(lastError.message);
+      continue;
+    }
+
+    if (modelToTry !== model) {
+      console.log(`OpenRouter fallback succeeded with ${modelToTry}`);
+    }
+
+    return content;
   }
 
-  const content = data.choices?.[0]?.message?.content;
-  if (!content) {
-    throw new Error('OpenRouter returned an empty response.');
-  }
-
-  return content;
+  throw lastError || new Error('OpenRouter request failed.');
 };
