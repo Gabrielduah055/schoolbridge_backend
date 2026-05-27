@@ -1,14 +1,15 @@
+import 'dotenv/config';
+
 import express from 'express';
 import cors from 'cors';
-import dotenv from 'dotenv';
 import dns from 'node:dns/promises';
 import connectDB from './config/db';
 import knowledgeRoutes from './routes/knowledge';
 import chatRoutes from './routes/chat';
 import studentRoutes from './routes/students';
+import './bot/telegram';
 
 dns.setServers(['8.8.8.8', '1.1.1.1']);
-dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
