@@ -44,7 +44,6 @@ const EscalationTicketSchema = new Schema<IEscalationTicket>(
 EscalationTicketSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
 // Query patterns used by admin command handlers
-EscalationTicketSchema.index({ ticketId: 1 }, { unique: true });
 EscalationTicketSchema.index({ chatId: 1, status: 1 });
 EscalationTicketSchema.index({ status: 1, createdAt: -1 });
 
