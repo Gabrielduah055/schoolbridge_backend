@@ -1,7 +1,8 @@
 import Knowledge from '../models/Knowledge';
 import Student from '../models/Students';
-import User from '../models/User';
 import Fee from '../models/Fee';
+import { getPhoneLookupCandidates } from '../utils/phone';
+import logger from '../utils/logger';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -123,16 +124,34 @@ const getSchoolKnowledge = async (): Promise<string> => {
 };
 
 const getStudentInfo = async (parentPhone: string): Promise<string> => {
-  const parent = await User.findOne({ phone: parentPhone, role: 'parent' });
-  if (!parent || !parent.studentId) return '';
+  const phoneCandidates = getPhoneLookupCandidates(parentPhone);
 
-  const student = await Student.findById(parent.studentId);
-  if (!student) return '';
+  // Source of truth: Students collection only.
+  // We no longer query User.studentId here — that path was removed in Phase 1
+  // because it could associate a student with a parent via a stale User record
+  // that no longer matched the Students collection.
+  const students = await Student.find({
+    status: 'active',
+    $or: [
+      { parentPhone:  { $in: phoneCandidates } },
+      { parentPhone2: { $in: phoneCandidates } }
+    ]
+  }).sort({ class: 1, name: 1 });
 
-  const fee = await Fee.findOne({ studentId: student._id });
+  if (students.length === 0) return '';
 
-  return `
-PARENT'S CHILD:
+  const feeRecords = await Fee.find({
+    studentId: { $in: students.map(s => s._id) }
+  });
+  const feeByStudentId = new Map(
+    feeRecords.map(fee => [fee.studentId.toString(), fee])
+  );
+
+  return students.map((student, index) => {
+    const fee = feeByStudentId.get(student._id.toString());
+
+    return `
+PARENT'S CHILD${students.length > 1 ? ` ${index + 1}` : ''}:
 Name: ${student.name}
 Class: ${student.class}
 Admission Number: ${student.admissionNumber}
@@ -151,6 +170,7 @@ Fee Status: ${fee ? fee.status : 'No fee record'}
 Amount Paid: GHS ${fee ? fee.amountPaid : 0}
 Outstanding: GHS ${fee ? fee.outstanding : 0}
   `;
+  }).join('\n');
 };
 
 const compact = (value: unknown): string => {
@@ -212,63 +232,78 @@ export const getSystemPrompt = async (
 ): Promise<string> => {
 
   const schoolKnowledge = await getSchoolKnowledge();
-  const studentInfo = userRole === 'parent' 
-    ? await getStudentInfo(userPhone) 
-    : '';
+  
+  // Only fetch student info for parents with real phone numbers
+  // telegram_ prefix means we need to look up via TelegramIdentity
+  let studentInfo = '';
+
+  // TelegramSession always stores the real phone — no telegram_ prefix workaround needed
+  if (userRole === 'parent' && userPhone) {
+    studentInfo = await getStudentInfo(userPhone);
+  }
+
   const studentRecords = await getStudentRecordsContext(userRole);
 
-  return `You are SchoolBridge, the official AI assistant 
-for ${process.env.SCHOOL_NAME}. You are intelligent, 
-professional, warm and helpful.
+  return `You are SchoolBridge, the official AI assistant for ${process.env.SCHOOL_NAME}.
+You are intelligent, professional, warm and helpful.
 
 CURRENT USER:
 Name: ${userName}
 Role: ${userRole}
-Phone: ${userPhone}
 
-${studentInfo ? `CHILD INFORMATION:\n${studentInfo}` : ''}
-${studentRecords ? `AUTHORIZED STUDENT RECORDS:\n${studentRecords}` : ''}
+${studentInfo ? `CHILD INFORMATION (ONLY share this with the authenticated parent above):
+${studentInfo}` : ''}
+${studentRecords ? `AUTHORIZED STUDENT RECORDS:
+${studentRecords}` : ''}
 
 SCHOOL KNOWLEDGE BASE:
 ${schoolKnowledge}
 
-YOUR RULES:
-- Answer ONLY from the school knowledge base and authorized student records above
-- For parents: give personalized info about THEIR child only
-- For teachers: help them communicate with parents
-- For admins: help with school management tasks
-- Parents must never receive another student's record, medical detail, contact, or fee detail
-- If you don't know something: say 
-  "I don't have that information yet. 
-  Please contact the school office directly."
-- Be warm, professional and concise
+CORE RULES (NEVER break these):
+- Answer ONLY from the school knowledge base and authorized data above
+- NEVER reveal individual student records, fee details, phone numbers, or medical
+  information to any user whose role is NOT 'parent' or 'admin' or 'teacher'
+- Parents ONLY receive information about THEIR OWN children listed under CHILD INFORMATION
+- NEVER cross-share one parent's child info with another parent
+- If asked about a student not in your CHILD INFORMATION section, refuse politely
+- If you don't know something, say: "I don't have that information. Please contact
+  the school office directly."
+- Be warm, professional, and concise
 - Use Ghana Cedis (GHS) for all money
 - Always address users by their name
-- Never share one student's info with 
-  another parent
 
 ${userRole === 'parent' ? `
 PARENT GUIDELINES:
-- Only answer questions about their own child
-- Be empathetic and supportive
-- Encourage fee payments politely
-- Direct complex issues to school office
+- You have access ONLY to your own child's information listed above
+- Answer questions about your child's fees, class, schedule, and welfare
+- If asked about another student by name, say you can only help with their own child
+- Encourage fee payments politely if outstanding balance > 0
+- Direct complex or sensitive issues to the school office
+` : ''}
+
+${userRole === 'unregistered' ? `
+VISITOR GUIDELINES:
+- This user's phone number is NOT registered as a parent/guardian in our system
+- You have NO access to any individual student records, fee information, or personal data
+- Do NOT share any student names, class lists, fee amounts, or guardian contacts
+- You CAN answer general questions: school calendar, policies, admission process,
+  contact details, general fee structures (not individual fees)
+- Encourage the visitor to contact the school office to register their guardian details
+- If asked about a specific student, politely decline and direct them to the office
 ` : ''}
 
 ${userRole === 'teacher' ? `
 TEACHER GUIDELINES:
-- Help teachers draft messages to parents
-- Keep messages professional and constructive
-- Always mention the student's name
-- Be solution focused not just problem focused
+- Help teachers draft messages to parents professionally
+- Keep messages constructive and solution-focused
+- Always mention the student's name in communications
 ` : ''}
 
 ${userRole === 'admin' ? `
 ADMIN GUIDELINES:
 - Help with school management tasks
-- Generate reports when asked
-- Send announcements when instructed
-- Provide school statistics and insights from imported student records when available
+- Generate reports and statistics from student records when asked
+- Provide school insights and summaries
 ` : ''}`;
 };
 
@@ -325,26 +360,25 @@ export const chatWithSchoolAgent = async (
       lastError = error instanceof Error
         ? error
         : new Error(`OpenRouter network request failed for ${modelToTry}.`);
-      console.error(`OpenRouter network request failed for ${modelToTry}: ${lastError.message}`);
+      logger.error({ model: modelToTry, err: lastError }, 'OpenRouter network request failed');
       continue;
     }
 
     if (!response.ok || data.error) {
       lastError = buildOpenRouterError(response, data, modelToTry);
-      console.error(lastError.message);
+      logger.error({ model: modelToTry, err: lastError }, 'OpenRouter API error');
       continue;
     }
 
     const content = data.choices?.[0]?.message?.content;
     if (!content) {
       lastError = new Error(`OpenRouter returned an empty response for ${modelToTry}.`);
-      console.error(lastError.message);
+      logger.error({ model: modelToTry, err: lastError }, 'OpenRouter empty response');
       continue;
     }
 
     if (modelToTry !== model) {
-      console.log(`OpenRouter fallback succeeded with ${modelToTry}`);
-    }
+      logger.info({ fallbackModel: modelToTry }, 'OpenRouter fallback succeeded');    }
 
     return content;
   }
