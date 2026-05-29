@@ -54,7 +54,6 @@ const TelegramSessionSchema = new Schema<ITelegramSession>(
 TelegramSessionSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
 // Query indexes
-TelegramSessionSchema.index({ chatId: 1 }, { unique: true });
 TelegramSessionSchema.index({ telegramUserId: 1 });
 TelegramSessionSchema.index({ phone: 1 });
 
