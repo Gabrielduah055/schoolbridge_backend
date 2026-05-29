@@ -21,8 +21,8 @@ const app  = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(cors({
-  origin:       process.env.FRONTEND_URL || '*',
-  methods:      ['GET', 'POST', 'PUT', 'DELETE'],
+  origin:         process.env.FRONTEND_URL || '*',
+  methods:        ['GET', 'POST', 'PUT', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
@@ -47,34 +47,38 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// ── 404 handler ───────────────────────────────────────────────────────────────
-app.use((req, res) => {
-  res.status(404).json({ error: `Route ${req.method} ${req.path} not found` });
-});
-
-// ── Global error handler ──────────────────────────────────────────────────────
-// Must have exactly 4 params for Express to recognise it as error middleware
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-app.use((err: Error, req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  logger.error({ err }, 'Unhandled HTTP error');
-  const status = (err as any).status ?? 500;
-  res.status(status).json({
-    error: status === 500 ? 'Internal server error' : err.message
-  });
-});
-
 // ── Startup ───────────────────────────────────────────────────────────────────
 
 const main = async () => {
   // 1. Connect DB first
   await connectDB();
 
-  // 2. Start the bot only after DB is ready
-  //    - production  → webhook (no polling conflicts on Render)
-  //    - development → polling (works locally without ngrok)
+  // 2. Start the bot — in production this registers /api/bot/webhook on `app`
+  //    IMPORTANT: initBot() must run before the 404 handler is registered,
+  //    otherwise Express will catch webhook requests with 404 before the
+  //    webhook route is mounted.
   await initBot(app);
 
-  // 3. Start Express
+  // 3. Register 404 and error handlers AFTER initBot so the webhook route
+  //    is found first in Express's middleware chain.
+
+  // ── 404 handler ─────────────────────────────────────────────────────────────
+  app.use((req, res) => {
+    res.status(404).json({ error: `Route ${req.method} ${req.path} not found` });
+  });
+
+  // ── Global error handler ─────────────────────────────────────────────────────
+  // Must have exactly 4 params for Express to recognise it as error middleware
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  app.use((err: Error, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    logger.error({ err }, 'Unhandled HTTP error');
+    const status = (err as any).status ?? 500;
+    res.status(status).json({
+      error: status === 500 ? 'Internal server error' : err.message
+    });
+  });
+
+  // 4. Start Express
   app.listen(PORT, () => {
     logger.info(
       { port: PORT, env: process.env.NODE_ENV || 'development' },
