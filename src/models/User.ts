@@ -8,6 +8,7 @@ export interface IUser extends Document {
   class?: string;
   subject?: string;
   studentId?: Types.ObjectId;
+  telegramChatId?: string;
   isActive: boolean;
   createdAt: Date;
 }
@@ -28,6 +29,7 @@ const UserSchema = new Schema({
     ref: 'Student', 
     default: null 
   },
+  telegramChatId: { type: String, default: null, sparse:true, index: true },
   isActive: { type: Boolean, default: true },
   createdAt: { type: Date, default: Date.now }
 });

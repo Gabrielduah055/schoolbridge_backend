@@ -86,4 +86,9 @@ const StudentSchema = new Schema({
   createdAt: { type: Date, default: Date.now }
 });
 
+// Indexes — these fields are queried on every parent message
+StudentSchema.index({ status: 1, parentPhone: 1 });
+StudentSchema.index({ status: 1, parentPhone2: 1 });
+StudentSchema.index({ admissionNumber: 1 }, { unique: true, sparse: true });
+
 export default mongoose.model<IStudent>('Student', StudentSchema);
