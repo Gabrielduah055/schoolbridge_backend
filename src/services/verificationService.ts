@@ -1,13 +1,47 @@
 import Student, { type IStudent } from '../models/Students';
+import Teacher, { type ITeacher } from '../models/Teacher';
 import { getPhoneLookupCandidates, normalizePhoneNumber } from '../utils/phone';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
+
+export interface TeacherInfo {
+  name:      string;
+  phone:     string;  // normalized to local 0XXXXXXXXX format
+  role:      'teacher';
+  teacherId: string;  // Teacher _id as a string
+}
 
 export interface ParentInfo {
   name:  string;
   phone: string;  // normalized to local 0XXXXXXXXX format
   role:  'parent';
 }
+
+// ─── Teacher lookup ────────────────────────────────────────────────────────────
+
+/**
+ * Looks up a teacher by phone number in the Teachers collection.
+ * Returns null if no active teacher has this phone number registered.
+ */
+export const findTeacherByPhone = async (
+  phoneNumber: string
+): Promise<TeacherInfo | null> => {
+  const phoneCandidates = getPhoneLookupCandidates(phoneNumber);
+
+  const teacher = await Teacher.findOne({
+    active: true,
+    phone: { $in: phoneCandidates }
+  });
+
+  if (!teacher) return null;
+
+  return {
+    name:      teacher.fullName,
+    phone:     normalizePhoneNumber(phoneNumber),
+    role:      'teacher',
+    teacherId: teacher._id.toString()
+  };
+};
 
 // ─── Parent lookup ─────────────────────────────────────────────────────────────
 

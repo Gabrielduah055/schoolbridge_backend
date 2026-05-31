@@ -15,7 +15,8 @@ import {
   findParentByPhone,
   findParentStudents,
   findStudentMentionedInMessage,
-  phoneOwnsStudent
+  phoneOwnsStudent,
+  findTeacherByPhone
 } from '../services/verificationService';
 import {
   raiseEscalation,
@@ -25,6 +26,7 @@ import {
 } from '../services/escalationService';
 import { normalizePhoneNumber } from '../utils/phone';
 import { checkRateLimit, secondsUntilReset } from '../utils/rateLimiter';
+import { Types } from 'mongoose';
 import logger from '../utils/logger';
 
 const token = process.env.TELEGRAM_BOT_TOKEN as string;
@@ -183,7 +185,18 @@ const sendVisitorGreeting = async (
   );
 };
 
-// ─── Contact handler ──────────────────────────────────────────────────────────
+const sendTeacherGreeting = async (
+  chatId: string,
+  teacher: { name: string; phone: string; role: string }
+) => {
+  await safeSendMessage(
+    chatId,
+    `Welcome, ${teacher.name}!\n\nYou are verified as a teacher.\nYour assigned class will be loaded shortly.`,
+    { reply_markup: { remove_keyboard: true } }
+  );
+};
+
+// ─── Contact handler ────────────────────────────────────────────────────────────────────────────────────
 
 const handleContactMessage = async (msg: TelegramBot.Message) => {
   const chatId    = msg.chat.id.toString();
@@ -204,7 +217,22 @@ const handleContactMessage = async (msg: TelegramBot.Message) => {
 
   const normalizedPhone = normalizePhoneNumber(contact.phone_number);
 
-  // Source of truth: Students collection only — no User upsert
+  // ── Step 1: Check Teachers collection first ──────────────────────────────
+  const teacher = await findTeacherByPhone(contact.phone_number);
+
+  if (teacher) {
+    await setSessionStatus(
+      chatId,
+      'teacher',
+      normalizedPhone,
+      new Types.ObjectId(teacher.teacherId)
+    );
+    await writeAuditLog('verification_success', chatId, { phone: normalizedPhone });
+    await sendTeacherGreeting(chatId, teacher);
+    return;
+  }
+
+  // ── Step 2: Fall back to Students collection (parent lookup) ─────────────
   const parent = await findParentByPhone(contact.phone_number);
 
   if (parent) {
@@ -214,13 +242,14 @@ const handleContactMessage = async (msg: TelegramBot.Message) => {
     return;
   }
 
+  // ── Step 3: Not found anywhere → visitor ─────────────────────────────────
   await setSessionStatus(chatId, 'visitor', normalizedPhone);
   await writeAuditLog('verification_failed', chatId, { phone: normalizedPhone, severity: 'warn' });
 
   await safeSendMessage(
     chatId,
-    `Hello ${firstName}! I checked the number you shared, but I could not find it as a registered parent or guardian contact.\n\nYou can still ask me general school questions.\n\n💡 *If you are a parent and believe your number should be registered,* use /escalate to request manual verification from the school admin.`,
-    { parse_mode: 'Markdown', reply_markup: { remove_keyboard: true } }
+    `I couldn't find your number in our records.\nYou can continue as a visitor.`,
+    { reply_markup: { remove_keyboard: true } }
   );
 };
 

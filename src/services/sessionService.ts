@@ -1,7 +1,9 @@
 import TelegramBot from 'node-telegram-bot-api';
+import { Types } from 'mongoose';
 import TelegramSession, { type ITelegramSession } from '../models/TelegramSession';
 
 // ─── TTL constants ─────────────────────────────────────────────────────────────
+export const SESSION_TTL_TEACHER_MS    = 30 * 24 * 60 * 60 * 1000; // 30 days
 export const SESSION_TTL_PARENT_MS     = 7 * 24 * 60 * 60 * 1000;  // 7 days
 export const SESSION_TTL_VISITOR_MS    = 24 * 60 * 60 * 1000;       // 24 hours
 export const SESSION_TTL_UNVERIFIED_MS = 60 * 60 * 1000;            // 1 hour
@@ -59,23 +61,30 @@ export const getOrCreateSession = async (
 export const setSessionStatus = async (
   chatId: string,
   status: ITelegramSession['status'],
-  phone: string
+  phone: string,
+  teacherId?: Types.ObjectId
 ): Promise<void> => {
-  const ttl = status === 'parent' ? SESSION_TTL_PARENT_MS : SESSION_TTL_VISITOR_MS;
+  const ttl =
+    status === 'teacher'
+      ? SESSION_TTL_TEACHER_MS
+      : status === 'parent'
+        ? SESSION_TTL_PARENT_MS
+        : SESSION_TTL_VISITOR_MS;
 
-  await TelegramSession.updateOne(
-    { chatId },
-    {
-      $set: {
-        status,
-        phone,
-        isOwnContact:        true,
-        expiresAt:           new Date(Date.now() + ttl),
-        lastActivityAt:      new Date(),
-        conversationHistory: []   // ← intentional: clean slate after verification
-      }
-    }
-  );
+  const update: Record<string, unknown> = {
+    status,
+    phone,
+    isOwnContact:        true,
+    expiresAt:           new Date(Date.now() + ttl),
+    lastActivityAt:      new Date(),
+    conversationHistory: []   // ← intentional: clean slate after verification
+  };
+
+  if (teacherId) {
+    update.teacherId = teacherId;
+  }
+
+  await TelegramSession.updateOne({ chatId }, { $set: update });
 };
 
 /**
