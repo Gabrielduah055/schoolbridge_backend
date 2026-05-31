@@ -4,8 +4,9 @@ export interface ITelegramIdentity extends Document {
   chatId: string;
   telegramUserId: string;
   phone: string;
-  status: 'parent' | 'visitor';
+  status: 'parent' | 'teacher' | 'visitor';
   parentUserId?: Types.ObjectId;
+  teacherId?: Types.ObjectId;   // set when status === 'teacher'
   firstName: string;
   lastName: string;
   username: string;
@@ -21,12 +22,17 @@ const TelegramIdentitySchema = new Schema(
     phone: { type: String, required: true, index: true },
     status: {
       type: String,
-      enum: ['parent', 'visitor'],
+      enum: ['parent', 'teacher', 'visitor'],
       required: true
     },
     parentUserId: {
       type: Schema.Types.ObjectId,
       ref: 'User',
+      default: null
+    },
+    teacherId: {
+      type: Schema.Types.ObjectId,
+      ref: 'Teacher',
       default: null
     },
     firstName: { type: String, default: '' },

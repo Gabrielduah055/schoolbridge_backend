@@ -1,4 +1,4 @@
-import mongoose, { Schema, Document } from 'mongoose';
+import mongoose, { Schema, Document, Types } from 'mongoose';
 
 interface IConversationMessage {
   role: 'user' | 'assistant';
@@ -10,7 +10,8 @@ export interface ITelegramSession extends Document {
   chatId: string;
   telegramUserId: string;     // msg.from.id — used to detect account changes
   phone: string | null;       // normalized phone, set after contact is shared
-  status: 'unverified' | 'parent' | 'visitor' | 'escalation_pending';
+  status: 'unverified' | 'parent' | 'teacher' | 'visitor' | 'escalation_pending';
+  teacherId?: Types.ObjectId; // set when status === 'teacher'
   firstName: string;
   lastName: string;
   username: string;
@@ -29,9 +30,14 @@ const TelegramSessionSchema = new Schema<ITelegramSession>(
     phone:          { type: String, default: null },
     status: {
       type: String,
-      enum: ['unverified', 'parent', 'visitor', 'escalation_pending'],
+      enum: ['unverified', 'parent', 'teacher', 'visitor', 'escalation_pending'],
       default: 'unverified',
       required: true
+    },
+    teacherId: {
+      type: Schema.Types.ObjectId,
+      ref: 'Teacher',
+      default: null
     },
     firstName:    { type: String, default: '' },
     lastName:     { type: String, default: '' },
