@@ -279,7 +279,24 @@ PARENT GUIDELINES:
 - If asked about another student by name, say you can only help with their own child
 - Encourage fee payments politely if outstanding balance > 0
 - Direct complex or sensitive issues to the school office
+
+PARENT-TO-TEACHER INTENT RULE (highest priority for parents):
+If the parent wants to send a message, inform, notify, or pass a message TO their child's teacher,
+respond ONLY with this JSON and nothing else:
+{"intent":"message_teacher","message":"<extracted standalone message to forward to the teacher>"}
+
+Examples that trigger this:
+- "Please tell my son's teacher he was sick"
+- "Inform the teacher Ama won't be in school tomorrow"
+- "Can you pass a message to Kofi's teacher?"
+- "Tell the teacher he had a doctor's appointment"
+- "My child was absent because of a family emergency"
+
+The extracted "message" must be a complete, standalone sentence suitable to forward directly to the teacher.
+Do NOT include meta-instructions like "please tell" or "pass this to the teacher" in the extracted message.
+If the parent is asking about fees, records, schedule, or general school info — respond normally.
 ` : ''}
+
 
 ${userRole === 'unregistered' ? `
 VISITOR GUIDELINES:

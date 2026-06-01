@@ -19,6 +19,15 @@ import {
   findTeacherByPhone
 } from '../services/verificationService';
 import {
+  getTeacherContext,
+  isStudentInTeacherClass,
+  type TeacherContext
+} from '../services/teacherAuthService';
+import { handleBroadcastIfIntended } from '../services/broadcastService';
+import { handleStudentMessageIfIntended } from '../services/studentMessageService';
+import { handleScheduledIfIntended } from '../services/scheduledNotificationService';
+import { handleParentToTeacherIfIntended } from '../services/parentToTeacherService';
+import {
   raiseEscalation,
   approveEscalation,
   rejectEscalation,
@@ -185,6 +194,7 @@ const sendVisitorGreeting = async (
   );
 };
 
+// Sent immediately after contact-sharing verification (Phase 1 greeting)
 const sendTeacherGreeting = async (
   chatId: string,
   teacher: { name: string; phone: string; role: string }
@@ -194,6 +204,88 @@ const sendTeacherGreeting = async (
     `Welcome, ${teacher.name}!\n\nYou are verified as a teacher.\nYour assigned class will be loaded shortly.`,
     { reply_markup: { remove_keyboard: true } }
   );
+};
+
+// ─── Teacher authorization reply helpers ──────────────────────────────────────
+
+/**
+ * Sends the correct denial message based on why getTeacherContext returned null.
+ * Caller must already know the teacher exists (status==='teacher') but context failed.
+ */
+const sendTeacherInactiveMessage = async (chatId: string) => {
+  await safeSendMessage(
+    chatId,
+    `Your teacher account is currently inactive.\nPlease contact the school admin.`,
+    { reply_markup: { remove_keyboard: true } }
+  );
+};
+
+const sendTeacherNoClassMessage = async (chatId: string) => {
+  await safeSendMessage(
+    chatId,
+    `You don't have an assigned class yet.\nPlease contact the school admin.`,
+    { reply_markup: { remove_keyboard: true } }
+  );
+};
+
+const sendTeacherAccessDeniedMessage = async (chatId: string) => {
+  await safeSendMessage(
+    chatId,
+    `Access denied.\nYou are not assigned to this student's class.`,
+    { reply_markup: { remove_keyboard: true } }
+  );
+};
+
+/**
+ * Resolves why getTeacherContext() returned null and sends the correct message.
+ * Checks in order: inactive teacher → no class assigned.
+ */
+const handleTeacherContextFailure = async (
+  chatId: string,
+  identity: { teacherId?: unknown }
+): Promise<void> => {
+  if (!identity.teacherId) {
+    await sendTeacherNoClassMessage(chatId);
+    return;
+  }
+
+  // Import inline to avoid circular dep
+  const Teacher = (await import('../models/Teacher')).default;
+  const teacher = await Teacher.findById(identity.teacherId);
+
+  if (!teacher || !teacher.active) {
+    await sendTeacherInactiveMessage(chatId);
+    return;
+  }
+
+  // Teacher is active but has no class assigned
+  await sendTeacherNoClassMessage(chatId);
+};
+
+// ─── Teacher session greeting (Task 4) ───────────────────────────────────────
+
+/**
+ * Greets a verified teacher with their assigned class, or tells them
+ * they have no class yet. Called from /start when status === 'teacher'.
+ */
+const sendTeacherContextGreeting = async (
+  chatId: string,
+  ctx: TeacherContext | null,
+  teacherName: string
+) => {
+  if (ctx) {
+    await safeSendMessage(
+      chatId,
+      `Welcome, ${ctx.teacher.fullName} 👋\nYou are the class teacher for *${ctx.className}*.`,
+      { parse_mode: 'Markdown', reply_markup: { remove_keyboard: true } }
+    );
+  } else {
+    await safeSendMessage(
+      chatId,
+      `Welcome, ${teacherName} 👋\nYou are verified but have no assigned class yet.\nPlease contact the school admin.`,
+      { reply_markup: { remove_keyboard: true } }
+    );
+  }
 };
 
 // ─── Contact handler ────────────────────────────────────────────────────────────────────────────────────
@@ -401,6 +493,16 @@ bot.onText(/\/start/, async (msg) => {
       return;
     }
 
+    // ── Teacher: load context and greet with class info (Task 4) ─────────────
+    if (session.status === 'teacher') {
+      const TelegramIdentity = (await import('../models/TelegramIdentity')).default;
+      const identity = await TelegramIdentity.findOne({ chatId, status: 'teacher' });
+      const ctx = await getTeacherContext(chatId);
+      const teacherName = session.firstName || firstName;
+      await sendTeacherContextGreeting(chatId, ctx, teacherName);
+      return;
+    }
+
     if (session.status === 'visitor') {
       await sendVisitorGreeting(chatId, session.firstName || firstName, false);
       return;
@@ -473,10 +575,77 @@ bot.on('message', async (msg) => {
       return;
     }
 
+    // ── Teacher authorization gate (Task 5) ───────────────────────────────────
+    if (session.status === 'teacher') {
+      const ctx = await getTeacherContext(chatId);
+
+      if (!ctx) {
+        // Resolve the exact reason and send the appropriate denial
+        const TelegramIdentity = (await import('../models/TelegramIdentity')).default;
+        const identity = await TelegramIdentity.findOne({ chatId, status: 'teacher' });
+        if (identity) await handleTeacherContextFailure(chatId, identity);
+        return;
+      }
+
+      // ── Broadcast intercept (Phase 3) — runs before normal AI ──────────────
+      const wasBroadcast = await handleBroadcastIfIntended(bot, chatId, messageText, ctx);
+      if (wasBroadcast) return;
+
+      // ── Student-specific message intercept (Phase 4) ──────────────────────
+      const wasStudentMessage = await handleStudentMessageIfIntended(bot, chatId, messageText, ctx);
+      if (wasStudentMessage) return;
+
+      // ── Scheduled notification intercept (Phase 6) ──────────────────────
+      const wasScheduled = await handleScheduledIfIntended(bot, chatId, messageText, ctx);
+      if (wasScheduled) return;
+
+      // If the teacher references a student by name, enforce class ownership
+      const mentionedStudent = await findStudentMentionedInMessage(messageText);
+      if (mentionedStudent) {
+        const owned = await isStudentInTeacherClass(mentionedStudent.name, ctx.className);
+        if (!owned) {
+          await sendTeacherAccessDeniedMessage(chatId);
+          await writeAuditLog('access_denied', chatId, {
+            phone: session.phone ?? '',
+            severity: 'security'
+          });
+          return;
+        }
+      }
+
+      // Authorized — pass through to AI as teacher role
+      const history = loadHistory(session);
+      history.push({ role: 'user', content: messageText });
+      const aiResponse = await chatWithSchoolAgent(
+        history,
+        'teacher',
+        session.phone ?? '',
+        ctx.teacher.fullName
+      );
+      await addToConversationHistory(chatId, messageText, aiResponse);
+      await safeSendMessage(chatId, aiResponse, { parse_mode: 'Markdown' });
+      logger.info({ userRole: 'teacher', className: ctx.className }, 'Teacher message handled');
+      return;
+    }
+
+    // ── Parent / Visitor flow ─────────────────────────────────────────────────
     const isParent  = session.status === 'parent';
     const userRole  = isParent ? 'parent' : 'unregistered';
     const userName  = session.firstName || msg.from?.first_name || 'Visitor';
     const userPhone = session.phone ?? '';
+
+    // ── Parent-to-teacher intercept (Phase 7) ─────────────────────────────
+    // Only fires for verified parents. Visitors fall through to normal AI.
+    if (isParent && userPhone) {
+      const wasParentToTeacher = await handleParentToTeacherIfIntended(
+        bot,
+        chatId,
+        messageText,
+        userPhone,
+        userName
+      );
+      if (wasParentToTeacher) return;
+    }
 
     const handledByAccessGuard = await guardStudentAccessRequest(
       chatId,
@@ -515,7 +684,7 @@ bot.on('polling_error', (error) => {
  * - production  → registers a webhook with Telegram and mounts the POST route
  * - development → deletes any stale webhook and falls back to polling
  */
-export const initBot = async (app: Application): Promise<void> => {
+export const initBot = async (app: Application): Promise<TelegramBot> => {
   const isProduction = process.env.NODE_ENV === 'production';
 
   if (isProduction) {
@@ -550,6 +719,8 @@ export const initBot = async (app: Application): Promise<void> => {
     bot.startPolling();
     logger.info('SchoolBridge bot ready via polling (development)');
   }
+
+  return bot;
 };
 
 export default bot;
