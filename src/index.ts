@@ -9,6 +9,7 @@ import cors from 'cors';
 import dns from 'node:dns/promises';
 import connectDB from './config/db';
 import { initBot } from './bot/telegram';
+import { startSchedulerWorker } from './workers/schedulerWorker';
 import { requireApiKey } from './middleware/authorization';
 import logger from './utils/logger';
 import knowledgeRoutes from './routes/knowledge';
@@ -57,9 +58,12 @@ const main = async () => {
   //    IMPORTANT: initBot() must run before the 404 handler is registered,
   //    otherwise Express will catch webhook requests with 404 before the
   //    webhook route is mounted.
-  await initBot(app);
+  const bot = await initBot(app);
 
-  // 3. Register 404 and error handlers AFTER initBot so the webhook route
+  // 3. Start the cron worker — fires every minute to send scheduled notifications
+  startSchedulerWorker(bot);
+
+  // 4. Register 404 and error handlers AFTER initBot so the webhook route
   //    is found first in Express's middleware chain.
 
   // ── 404 handler ─────────────────────────────────────────────────────────────
