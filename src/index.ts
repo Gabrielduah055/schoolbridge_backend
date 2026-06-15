@@ -36,11 +36,6 @@ app.use(express.urlencoded({ extended: false }));
 // Public routes
 app.use('/api/chat', chatRoutes);
 
-// Protected routes — require Authorization: Bearer <ADMIN_API_KEY>
-app.use('/api/students',  requireApiKey, studentRoutes);
-app.use('/api/knowledge', requireApiKey, knowledgeRoutes);
-app.use('/api', requireApiKey, communicationRoutes);
-
 app.get('/', (req, res) => {
   res.json({ message: 'SchoolBridge API is running 🏫🚀' });
 });
@@ -61,6 +56,12 @@ const main = async () => {
   //    otherwise Express will catch webhook requests with 404 before the
   //    webhook route is mounted.
   const bot = await initBot(app);
+
+  // Protected routes: mount these after initBot() so Telegram can reach
+  // /api/bot/webhook without the admin API-key middleware blocking it.
+  app.use('/api/students',  requireApiKey, studentRoutes);
+  app.use('/api/knowledge', requireApiKey, knowledgeRoutes);
+  app.use('/api', requireApiKey, communicationRoutes);
 
   // 3. Start the cron worker — fires every minute to send scheduled notifications
   startSchedulerWorker(bot);
