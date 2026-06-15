@@ -10,6 +10,7 @@ export interface IWebhookEvent extends Document {
   rawPayload: Record<string, unknown>;
   processedAt: Date | null;
   status: 'received' | 'processed' | 'failed' | 'ignored';
+  errorMessage: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -19,7 +20,7 @@ const WebhookEventSchema = new Schema<IWebhookEvent>(
     schoolId: { type: String, default: DEFAULT_SCHOOL_ID, index: true },
     channel: { type: String, enum: ['telegram', 'whatsapp'], required: true, index: true },
     provider: { type: String, required: true },
-    providerEventId: { type: String, required: true },
+    providerEventId: { type: String, default: '' },
     eventType: { type: String, required: true, index: true },
     rawPayload: { type: Schema.Types.Mixed, required: true },
     processedAt: { type: Date, default: null },
@@ -28,7 +29,8 @@ const WebhookEventSchema = new Schema<IWebhookEvent>(
       enum: ['received', 'processed', 'failed', 'ignored'],
       default: 'received',
       index: true
-    }
+    },
+    errorMessage: { type: String, default: '' }
   },
   { timestamps: true }
 );
@@ -39,4 +41,3 @@ WebhookEventSchema.index(
 );
 
 export default mongoose.model<IWebhookEvent>('WebhookEvent', WebhookEventSchema);
-

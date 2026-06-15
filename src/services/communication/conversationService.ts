@@ -41,11 +41,16 @@ export const openOrCreateConversation = async (
 
 export const markConversationStatus = async (
   conversationId: string,
-  status: 'ai_replied' | 'needs_human' | 'assigned' | 'resolved' | 'failed'
+  status: 'open' | 'ai_replied' | 'needs_human' | 'assigned' | 'resolved' | 'failed' | 'failed_delivery'
 ) => {
   await Conversation.updateOne(
     { _id: conversationId },
-    { $set: { status, lastMessageAt: new Date() } }
+    {
+      $set: {
+        status,
+        lastMessageAt: new Date(),
+        resolvedAt: status === 'resolved' ? new Date() : null
+      }
+    }
   );
 };
-

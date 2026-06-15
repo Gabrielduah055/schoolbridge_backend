@@ -5,6 +5,8 @@ import { DEFAULT_SCHOOL_ID } from '../../config/school';
 
 interface LogDeliveryArgs {
   messageId?: Types.ObjectId;
+  broadcastId?: Types.ObjectId;
+  recipientId?: Types.ObjectId;
   schoolId?: string;
   channel: 'telegram' | 'whatsapp';
   provider: string;
@@ -17,6 +19,8 @@ interface LogDeliveryArgs {
 
 export const logDelivery = async ({
   messageId,
+  broadcastId,
+  recipientId,
   schoolId = DEFAULT_SCHOOL_ID,
   channel,
   provider,
@@ -28,6 +32,8 @@ export const logDelivery = async ({
 }: LogDeliveryArgs) => {
   const log = await DeliveryLog.create({
     messageId,
+    broadcastId,
+    recipientId,
     schoolId,
     channel,
     provider,
@@ -38,19 +44,25 @@ export const logDelivery = async ({
     rawPayload
   });
 
-  const timestampField = eventType === 'inbound_received' ? 'lastInboundAt' : 'lastOutboundAt';
+  const timestampField = status === 'received' || eventType === 'inbound_received' ? 'lastInboundAt' : 'lastOutboundAt';
+  const identifier = channel === 'telegram' ? 'telegram-bot' : provider;
+  const displayName = channel === 'telegram'
+    ? process.env.SCHOOL_NAME || 'SchoolBridge Telegram Bot'
+    : provider;
+
   await ChannelAccount.findOneAndUpdate(
-    { schoolId, channel, provider, identifier: provider },
+    { schoolId, channel, identifier },
     {
       $setOnInsert: {
         schoolId,
         channel,
         provider,
-        identifier: provider,
-        displayName: provider
+        identifier,
+        displayName
       },
       $set: {
         status: errorMessage ? 'error' : 'connected',
+        provider,
         [timestampField]: new Date(),
         lastError: errorMessage
       }
@@ -60,4 +72,3 @@ export const logDelivery = async ({
 
   return log;
 };
-

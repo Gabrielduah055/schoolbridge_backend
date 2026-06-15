@@ -5,13 +5,15 @@ export interface IBroadcast extends Document {
   schoolId: string;
   createdBy?: Types.ObjectId;
   createdByRole: 'teacher' | 'admin';
-  audienceType: 'whole_school' | 'class' | 'individual' | 'teachers' | 'parents';
+  audienceType: 'whole_school' | 'class' | 'individual' | 'individual_parent' | 'teachers' | 'parents';
   classId?: Types.ObjectId;
+  targetClass: string;
+  recipientPhone: string;
   title: string;
   originalText: string;
   draftedText: string;
   approvalStatus: 'draft' | 'pending_approval' | 'approved' | 'rejected';
-  status: 'draft' | 'scheduled' | 'sending' | 'sent' | 'partial' | 'failed' | 'cancelled';
+  status: 'draft' | 'scheduled' | 'sending' | 'sent' | 'partial' | 'partially_failed' | 'failed' | 'cancelled';
   channels: Array<'telegram' | 'whatsapp'>;
   sentAt: Date | null;
   createdAt: Date;
@@ -25,11 +27,13 @@ const BroadcastSchema = new Schema<IBroadcast>(
     createdByRole: { type: String, enum: ['teacher', 'admin'], required: true },
     audienceType: {
       type: String,
-      enum: ['whole_school', 'class', 'individual', 'teachers', 'parents'],
+      enum: ['whole_school', 'class', 'individual', 'individual_parent', 'teachers', 'parents'],
       required: true,
       index: true
     },
     classId: { type: Schema.Types.ObjectId, ref: 'Class', default: null },
+    targetClass: { type: String, default: '', index: true },
+    recipientPhone: { type: String, default: '', index: true },
     title: { type: String, default: '' },
     originalText: { type: String, required: true },
     draftedText: { type: String, default: '' },
@@ -41,7 +45,7 @@ const BroadcastSchema = new Schema<IBroadcast>(
     },
     status: {
       type: String,
-      enum: ['draft', 'scheduled', 'sending', 'sent', 'partial', 'failed', 'cancelled'],
+      enum: ['draft', 'scheduled', 'sending', 'sent', 'partial', 'partially_failed', 'failed', 'cancelled'],
       default: 'draft',
       index: true
     },
@@ -54,4 +58,3 @@ const BroadcastSchema = new Schema<IBroadcast>(
 BroadcastSchema.index({ schoolId: 1, createdAt: -1 });
 
 export default mongoose.model<IBroadcast>('Broadcast', BroadcastSchema);
-

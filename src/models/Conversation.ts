@@ -8,7 +8,8 @@ export type ConversationStatus =
   | 'needs_human'
   | 'assigned'
   | 'resolved'
-  | 'failed';
+  | 'failed'
+  | 'failed_delivery';
 
 export interface IConversation extends Document {
   schoolId: string;
@@ -32,6 +33,7 @@ export interface IConversation extends Document {
     timestamp: Date;
   }>;
   status: ConversationStatus;
+  resolvedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -90,11 +92,12 @@ const ConversationSchema = new Schema<IConversation>(
     ],
     status: {
       type: String,
-      enum: ['active', 'open', 'ai_replied', 'needs_human', 'assigned', 'resolved', 'failed'],
+      enum: ['active', 'open', 'ai_replied', 'needs_human', 'assigned', 'resolved', 'failed', 'failed_delivery'],
       default: 'open',
       index: true
     },
     assignedTo: { type: String, default: '' },
+    resolvedAt: { type: Date, default: null },
     lastMessageAt: { type: Date, default: null, index: true }
   },
   { timestamps: true }
@@ -104,4 +107,3 @@ ConversationSchema.index({ schoolId: 1, channel: 1, externalChatId: 1 });
 ConversationSchema.index({ schoolId: 1, status: 1, lastMessageAt: -1 });
 
 export default mongoose.model<IConversation>('Conversation', ConversationSchema);
-

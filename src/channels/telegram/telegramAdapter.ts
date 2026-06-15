@@ -28,7 +28,7 @@ export const normalizeTelegramMessage = (
   return {
     schoolId: DEFAULT_SCHOOL_ID,
     channel: 'telegram',
-    provider: 'telegram',
+    provider: 'telegram_bot',
     externalChatId: msg.chat.id.toString(),
     externalUserId: from?.id?.toString() ?? '',
     text: msg.text || '',
@@ -70,7 +70,7 @@ export const upsertTelegramIdentity = async (
     {
       schoolId: DEFAULT_SCHOOL_ID,
       channel: 'telegram',
-      provider: 'telegram',
+      provider: 'telegram_bot',
       identifier: 'telegram-bot'
     },
     {
@@ -90,4 +90,3 @@ export const upsertTelegramIdentity = async (
     { upsert: true }
   );
 };
-

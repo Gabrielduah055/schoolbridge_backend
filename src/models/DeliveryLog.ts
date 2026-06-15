@@ -3,6 +3,8 @@ import { DEFAULT_SCHOOL_ID } from '../config/school';
 
 export interface IDeliveryLog extends Document {
   messageId?: Types.ObjectId;
+  broadcastId?: Types.ObjectId;
+  recipientId?: Types.ObjectId;
   schoolId: string;
   channel: 'telegram' | 'whatsapp';
   provider: string;
@@ -17,6 +19,8 @@ export interface IDeliveryLog extends Document {
 const DeliveryLogSchema = new Schema<IDeliveryLog>(
   {
     messageId: { type: Schema.Types.ObjectId, ref: 'Message', default: null, index: true },
+    broadcastId: { type: Schema.Types.ObjectId, ref: 'Broadcast', default: null, index: true },
+    recipientId: { type: Schema.Types.ObjectId, ref: 'MessageRecipient', default: null, index: true },
     schoolId: { type: String, default: DEFAULT_SCHOOL_ID, index: true },
     channel: { type: String, enum: ['telegram', 'whatsapp'], required: true, index: true },
     provider: { type: String, required: true, default: 'telegram' },
@@ -37,4 +41,3 @@ const DeliveryLogSchema = new Schema<IDeliveryLog>(
 DeliveryLogSchema.index({ schoolId: 1, channel: 1, createdAt: -1 });
 
 export default mongoose.model<IDeliveryLog>('DeliveryLog', DeliveryLogSchema);
-
