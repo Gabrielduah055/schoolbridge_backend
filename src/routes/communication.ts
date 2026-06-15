@@ -1,5 +1,7 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
+import { Types } from 'mongoose';
+import bot from '../bot/telegram';
 import ChannelAccount from '../models/ChannelAccount';
 import Conversation from '../models/Conversation';
 import Message from '../models/Message';
@@ -8,8 +10,16 @@ import Broadcast from '../models/Broadcast';
 import MessageRecipient from '../models/MessageRecipient';
 import DeliveryLog from '../models/DeliveryLog';
 import WebhookEvent from '../models/WebhookEvent';
+import Student from '../models/Students';
+import Teacher from '../models/Teacher';
+import ClassModel from '../models/Class';
+import TelegramIdentity from '../models/TelegramIdentity';
 import { createDraft, sendApprovedBroadcast } from '../services/communication/broadcastService';
+import { recordOutgoingMessage } from '../services/communication/messageService';
+import { logDelivery } from '../services/communication/deliveryService';
+import { createTicket } from '../services/communication/handoverService';
 import { DEFAULT_SCHOOL_ID } from '../config/school';
+import { normalizePhoneNumber } from '../utils/phone';
 
 const router = Router();
 
@@ -17,12 +27,262 @@ const schoolFilter = (req: Request) => ({
   schoolId: req.query.schoolId?.toString() || DEFAULT_SCHOOL_ID
 });
 
+const startOfToday = () => {
+  const date = new Date();
+  date.setHours(0, 0, 0, 0);
+  return date;
+};
+
+const toObjectIdOrNull = (value: unknown) => {
+  const text = value?.toString();
+  return text && Types.ObjectId.isValid(text) ? new Types.ObjectId(text) : null;
+};
+
+const unique = <T>(values: T[]) => Array.from(new Set(values.filter(Boolean)));
+
+const getLastConversationAt = async (phone: string) => {
+  if (!phone) return null;
+  const normalized = normalizePhoneNumber(phone);
+  const conversation = await Conversation.findOne({
+    $or: [
+      { participantPhone: normalized },
+      { parentPhone: normalized }
+    ]
+  }).sort({ lastMessageAt: -1, updatedAt: -1 });
+  return conversation?.lastMessageAt || conversation?.updatedAt || null;
+};
+
+const getIdentityStatus = async (phone: string, role?: 'parent' | 'teacher') => {
+  if (!phone) return 'not_connected';
+  const identity = await TelegramIdentity.findOne({
+    phone: normalizePhoneNumber(phone),
+    ...(role ? { status: role } : {})
+  });
+  return identity ? 'connected' : 'not_connected';
+};
+
 router.get('/channel-accounts', async (req: Request, res: Response) => {
   try {
     const accounts = await ChannelAccount.find(schoolFilter(req)).sort({ channel: 1 });
     res.json(accounts);
   } catch {
     res.status(500).json({ error: 'Failed to fetch channel accounts' });
+  }
+});
+
+router.get('/dashboard/metrics', async (req: Request, res: Response) => {
+  try {
+    const schoolId = schoolFilter(req).schoolId;
+    const today = startOfToday();
+
+    const [
+      messagesToday,
+      openConversations,
+      pendingHandovers,
+      failedDeliveries,
+      broadcastsSentToday,
+      telegramAccount,
+      recentConversations,
+      recentHandovers
+    ] = await Promise.all([
+      Message.countDocuments({ schoolId, createdAt: { $gte: today } }),
+      Conversation.countDocuments({ schoolId, status: { $nin: ['resolved', 'failed', 'failed_delivery'] } }),
+      HandoverTicket.countDocuments({ schoolId, status: { $in: ['open', 'assigned'] } }),
+      DeliveryLog.countDocuments({ schoolId, status: 'failed' }),
+      Broadcast.countDocuments({ schoolId, status: 'sent', sentAt: { $gte: today } }),
+      ChannelAccount.findOne({ schoolId, channel: 'telegram' }).sort({ updatedAt: -1 }),
+      Conversation.find({ schoolId }).sort({ lastMessageAt: -1, updatedAt: -1 }).limit(6),
+      HandoverTicket.find({ schoolId }).sort({ createdAt: -1 }).limit(6)
+    ]);
+
+    res.json({
+      messagesToday,
+      openConversations,
+      pendingHandovers,
+      failedDeliveries,
+      broadcastsSentToday,
+      telegramStatus: telegramAccount?.status || 'unknown',
+      whatsappStatus: 'not_configured',
+      recentConversations,
+      recentHandovers
+    });
+  } catch {
+    res.status(500).json({ error: 'Failed to fetch dashboard metrics' });
+  }
+});
+
+router.get('/parents', async (req: Request, res: Response) => {
+  try {
+    const students = await Student.find({ status: 'active' }).sort({ parentName: 1, class: 1, name: 1 }).lean();
+    const parents = new Map<string, any>();
+
+    for (const student of students as any[]) {
+      if (!student.parentPhone) continue;
+      const phone = normalizePhoneNumber(student.parentPhone);
+      const current = parents.get(phone) ?? {
+        name: student.parentName || 'Parent',
+        phone,
+        email: student.parentEmail || '',
+        linkedStudents: [],
+        classes: [],
+        preferredChannel: 'telegram',
+        channelIdentityStatus: await getIdentityStatus(phone, 'parent'),
+        lastConversationAt: await getLastConversationAt(phone)
+      };
+
+      current.linkedStudents.push({
+        id: student._id,
+        name: student.name,
+        class: student.class,
+        admissionNumber: student.admissionNumber
+      });
+      current.classes = unique([...current.classes, student.class]);
+      parents.set(phone, current);
+    }
+
+    res.json(Array.from(parents.values()));
+  } catch {
+    res.status(500).json({ error: 'Failed to fetch parents' });
+  }
+});
+
+router.get('/teachers', async (_req: Request, res: Response) => {
+  try {
+    const teachers = await Teacher.find({ active: true }).sort({ fullName: 1 }).lean();
+    const result = await Promise.all((teachers as any[]).map(async (teacher) => {
+      const classes = await ClassModel.find({ teacherId: teacher._id, active: true }).lean();
+      return {
+        id: teacher._id,
+        name: teacher.fullName,
+        phone: teacher.phone,
+        email: teacher.email || '',
+        assignedClasses: classes.map((item: any) => item.className),
+        subject: '',
+        channelIdentityStatus: await getIdentityStatus(teacher.phone, 'teacher'),
+        lastConversationAt: await getLastConversationAt(teacher.phone)
+      };
+    }));
+    res.json(result);
+  } catch {
+    res.status(500).json({ error: 'Failed to fetch teachers' });
+  }
+});
+
+router.get('/classes', async (_req: Request, res: Response) => {
+  try {
+    const students = await Student.find({ status: 'active' }).lean();
+    const classes = await ClassModel.find({ active: true }).populate('teacherId').lean();
+    const byClass = new Map<string, any>();
+
+    for (const student of students as any[]) {
+      const className = student.class || 'Unassigned';
+      const current = byClass.get(className) ?? {
+        id: className,
+        className,
+        teacher: 'Not assigned',
+        studentCount: 0,
+        parentContactCount: 0,
+        recentBroadcastCount: 0,
+        parentPhones: new Set<string>()
+      };
+      current.studentCount++;
+      if (student.parentPhone) current.parentPhones.add(normalizePhoneNumber(student.parentPhone));
+      byClass.set(className, current);
+    }
+
+    for (const classRecord of classes as any[]) {
+      const current = byClass.get(classRecord.className) ?? {
+        id: classRecord._id,
+        className: classRecord.className,
+        teacher: 'Not assigned',
+        studentCount: 0,
+        parentContactCount: 0,
+        recentBroadcastCount: 0,
+        parentPhones: new Set<string>()
+      };
+      current.id = classRecord._id;
+      current.teacher = classRecord.teacherId?.fullName || 'Not assigned';
+      byClass.set(classRecord.className, current);
+    }
+
+    const response = await Promise.all(Array.from(byClass.values()).map(async (item) => ({
+      id: item.id,
+      className: item.className,
+      teacher: item.teacher,
+      studentCount: item.studentCount,
+      parentContactCount: item.parentPhones.size,
+      recentBroadcastCount: await Broadcast.countDocuments({ targetClass: item.className })
+    })));
+
+    res.json(response.sort((a, b) => a.className.localeCompare(b.className)));
+  } catch {
+    res.status(500).json({ error: 'Failed to fetch classes' });
+  }
+});
+
+router.get('/classes/:id/parents', async (req: Request, res: Response) => {
+  try {
+    const classId = req.params.id.toString();
+    const classRecord = Types.ObjectId.isValid(classId)
+      ? await ClassModel.findById(classId)
+      : null;
+    const className = classRecord?.className || decodeURIComponent(classId);
+    const students = await Student.find({ status: 'active', class: className }).sort({ name: 1 }).lean();
+
+    const parents = await Promise.all((students as any[])
+      .filter((student) => student.parentPhone)
+      .map(async (student) => ({
+        class: className,
+        student: {
+          id: student._id,
+          name: student.name,
+          admissionNumber: student.admissionNumber
+        },
+        parentName: student.parentName || 'Parent',
+        parentPhone: normalizePhoneNumber(student.parentPhone),
+        parentEmail: student.parentEmail || '',
+        channelIdentityStatus: await getIdentityStatus(student.parentPhone, 'parent')
+      })));
+
+    res.json({ className, parents });
+  } catch {
+    res.status(500).json({ error: 'Failed to fetch class parents' });
+  }
+});
+
+router.get('/teachers/:id/classes', async (req: Request, res: Response) => {
+  try {
+    const teacherId = req.params.id.toString();
+    const teacher = Types.ObjectId.isValid(teacherId)
+      ? await Teacher.findById(teacherId)
+      : await Teacher.findOne({ phone: normalizePhoneNumber(teacherId) });
+
+    if (!teacher) {
+      res.status(404).json({ error: 'Teacher not found' });
+      return;
+    }
+
+    const classes = await ClassModel.find({ teacherId: teacher._id, active: true }).lean();
+    const response = await Promise.all((classes as any[]).map(async (classItem) => {
+      const students = await Student.find({ status: 'active', class: classItem.className }).lean();
+      const parentPhones = unique((students as any[]).map((student) => normalizePhoneNumber(student.parentPhone || '')));
+      return {
+        className: classItem.className,
+        studentCount: students.length,
+        parentContactCount: parentPhones.length
+      };
+    }));
+
+    res.json({
+      teacher: {
+        id: teacher._id,
+        name: teacher.fullName,
+        phone: teacher.phone
+      },
+      classes: response
+    });
+  } catch {
+    res.status(500).json({ error: 'Failed to fetch teacher classes' });
   }
 });
 
@@ -39,6 +299,186 @@ router.get('/conversations', async (req: Request, res: Response) => {
     res.json(conversations);
   } catch {
     res.status(500).json({ error: 'Failed to fetch conversations' });
+  }
+});
+
+router.post('/conversations/:id/reply', async (req: Request, res: Response) => {
+  try {
+    const body = req.body.body?.toString().trim();
+    const senderName = req.body.senderName?.toString().trim() || 'Admin';
+    const senderRole = req.body.senderRole === 'admin' ? 'admin' : 'admin';
+
+    if (!body) {
+      res.status(400).json({ error: 'Reply body is required' });
+      return;
+    }
+
+    const conversation = await Conversation.findById(req.params.id);
+    if (!conversation) {
+      res.status(404).json({ error: 'Conversation not found' });
+      return;
+    }
+
+    if (conversation.channel !== 'telegram') {
+      res.status(400).json({ error: 'Manual replies for this channel are not implemented yet.' });
+      return;
+    }
+
+    const message = await recordOutgoingMessage({
+      schoolId: conversation.schoolId,
+      channel: 'telegram',
+      conversationId: conversation._id as Types.ObjectId,
+      senderName,
+      senderRole,
+      body,
+      aiGenerated: false,
+      status: 'queued'
+    });
+
+    try {
+      const sent = await bot.sendMessage(conversation.externalChatId, body);
+      await Message.updateOne(
+        { _id: message._id },
+        {
+          $set: {
+            status: 'sent',
+            providerMessageId: sent.message_id.toString(),
+            sentAt: new Date()
+          }
+        }
+      );
+
+      await Conversation.updateOne(
+        { _id: conversation._id },
+        {
+          $set: {
+            lastMessageAt: new Date(),
+            status: conversation.status === 'resolved' ? 'resolved' : 'assigned'
+          }
+        }
+      );
+
+      await logDelivery({
+        messageId: message._id as Types.ObjectId,
+        schoolId: conversation.schoolId,
+        channel: 'telegram',
+        provider: 'telegram_bot',
+        providerMessageId: sent.message_id.toString(),
+        eventType: 'dashboard_manual_reply_sent',
+        status: 'sent',
+        rawPayload: sent as unknown as Record<string, unknown>
+      });
+
+      const updatedMessage = await Message.findById(message._id);
+      res.status(201).json(updatedMessage);
+    } catch (error: any) {
+      await Message.updateOne(
+        { _id: message._id },
+        { $set: { status: 'failed' } }
+      );
+      await Conversation.updateOne(
+        { _id: conversation._id },
+        { $set: { status: 'failed_delivery', lastMessageAt: new Date() } }
+      );
+      await logDelivery({
+        messageId: message._id as Types.ObjectId,
+        schoolId: conversation.schoolId,
+        channel: 'telegram',
+        provider: 'telegram_bot',
+        eventType: 'dashboard_manual_reply_failed',
+        status: 'failed',
+        errorMessage: error?.message || 'Telegram send failed'
+      });
+      res.status(502).json({ error: 'Failed to send Telegram reply' });
+    }
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Failed to send conversation reply' });
+  }
+});
+
+router.post('/conversations/:id/assign', async (req: Request, res: Response) => {
+  try {
+    const assignedTo = req.body.assignedTo?.toString().trim();
+    if (!assignedTo) {
+      res.status(400).json({ error: 'assignedTo is required' });
+      return;
+    }
+
+    const conversation = await Conversation.findById(req.params.id);
+    if (!conversation) {
+      res.status(404).json({ error: 'Conversation not found' });
+      return;
+    }
+
+    conversation.assignedTo = assignedTo;
+    if (conversation.status !== 'resolved') conversation.status = 'assigned';
+    await conversation.save();
+    res.json(conversation);
+  } catch {
+    res.status(500).json({ error: 'Failed to assign conversation' });
+  }
+});
+
+router.post('/conversations/:id/resolve', async (req: Request, res: Response) => {
+  try {
+    const conversation = await Conversation.findByIdAndUpdate(
+      req.params.id,
+      { status: 'resolved', resolvedAt: new Date() },
+      { new: true }
+    );
+
+    if (!conversation) {
+      res.status(404).json({ error: 'Conversation not found' });
+      return;
+    }
+
+    await HandoverTicket.updateMany(
+      { conversationId: conversation._id, status: { $in: ['open', 'assigned'] } },
+      { $set: { status: 'resolved', resolvedAt: new Date() } }
+    );
+    res.json(conversation);
+  } catch {
+    res.status(500).json({ error: 'Failed to resolve conversation' });
+  }
+});
+
+router.post('/conversations/:id/reopen', async (req: Request, res: Response) => {
+  try {
+    const conversation = await Conversation.findByIdAndUpdate(
+      req.params.id,
+      { status: 'open', resolvedAt: null },
+      { new: true }
+    );
+    if (!conversation) {
+      res.status(404).json({ error: 'Conversation not found' });
+      return;
+    }
+    res.json(conversation);
+  } catch {
+    res.status(500).json({ error: 'Failed to reopen conversation' });
+  }
+});
+
+router.post('/conversations/:id/mark-needs-human', async (req: Request, res: Response) => {
+  try {
+    const conversation = await Conversation.findById(req.params.id);
+    if (!conversation) {
+      res.status(404).json({ error: 'Conversation not found' });
+      return;
+    }
+
+    const ticket = await createTicket({
+      schoolId: conversation.schoolId,
+      conversationId: conversation._id as Types.ObjectId,
+      reason: req.body.reason?.toString().trim() || 'Marked for human attention by dashboard',
+      priority: req.body.priority || 'normal',
+      internalNotes: req.body.internalNotes || ''
+    });
+
+    const updated = await Conversation.findById(conversation._id);
+    res.json({ conversation: updated, ticket });
+  } catch {
+    res.status(500).json({ error: 'Failed to mark conversation as needs human' });
   }
 });
 
@@ -80,6 +520,64 @@ router.get('/handover-tickets', async (req: Request, res: Response) => {
   }
 });
 
+router.post('/handover-tickets/:id/assign', async (req: Request, res: Response) => {
+  try {
+    const assignedTo = req.body.assignedTo?.toString().trim();
+    if (!assignedTo) {
+      res.status(400).json({ error: 'assignedTo is required' });
+      return;
+    }
+
+    const ticket = await HandoverTicket.findById(req.params.id);
+    if (!ticket) {
+      res.status(404).json({ error: 'Handover ticket not found' });
+      return;
+    }
+
+    ticket.assignedTo = assignedTo;
+    if (ticket.status !== 'resolved') ticket.status = 'assigned';
+    await ticket.save();
+
+    await Conversation.updateOne(
+      { _id: ticket.conversationId, status: { $ne: 'resolved' } },
+      { $set: { assignedTo, status: 'assigned' } }
+    );
+
+    res.json(ticket);
+  } catch {
+    res.status(500).json({ error: 'Failed to assign handover ticket' });
+  }
+});
+
+router.post('/handover-tickets/:id/note', async (req: Request, res: Response) => {
+  try {
+    const note = req.body.note?.toString().trim();
+    const createdBy = req.body.createdBy?.toString().trim() || 'Admin';
+    if (!note) {
+      res.status(400).json({ error: 'note is required' });
+      return;
+    }
+
+    const ticket = await HandoverTicket.findByIdAndUpdate(
+      req.params.id,
+      {
+        $push: { notes: { text: note, createdBy, createdAt: new Date() } },
+        $set: { internalNotes: note }
+      },
+      { new: true }
+    );
+
+    if (!ticket) {
+      res.status(404).json({ error: 'Handover ticket not found' });
+      return;
+    }
+
+    res.json(ticket);
+  } catch {
+    res.status(500).json({ error: 'Failed to add handover note' });
+  }
+});
+
 router.post('/handover-tickets/:id/resolve', async (req: Request, res: Response) => {
   try {
     const ticket = await HandoverTicket.findByIdAndUpdate(
@@ -97,7 +595,12 @@ router.post('/handover-tickets/:id/resolve', async (req: Request, res: Response)
       return;
     }
 
-    await Conversation.updateOne({ _id: ticket.conversationId }, { status: 'resolved' });
+    if (req.body.resolveConversation !== false) {
+      await Conversation.updateOne(
+        { _id: ticket.conversationId },
+        { status: 'resolved', resolvedAt: new Date() }
+      );
+    }
     res.json(ticket);
   } catch {
     res.status(500).json({ error: 'Failed to resolve handover ticket' });
@@ -120,17 +623,21 @@ router.post('/broadcasts/draft', async (req: Request, res: Response) => {
     const { createdByRole, audienceType, originalText } = req.body;
     if (!createdByRole || !audienceType || !originalText) {
       res.status(400).json({ error: 'createdByRole, audienceType, and originalText are required' });
-      return;
+        return;
     }
 
+    const classObjectId = toObjectIdOrNull(req.body.classId);
     const broadcast = await createDraft({
       schoolId: req.body.schoolId || DEFAULT_SCHOOL_ID,
       createdByRole,
       audienceType,
+      classId: classObjectId ?? undefined,
+      targetClass: classObjectId ? '' : req.body.classId?.toString() || req.body.targetClass?.toString() || '',
+      recipientPhone: req.body.recipientPhone?.toString() || '',
       title: req.body.title,
       originalText,
       draftedText: req.body.draftedText,
-      channels: req.body.channels || ['telegram']
+      channels: (req.body.channels || ['telegram']).filter((channel: string) => channel === 'telegram')
     });
 
     res.status(201).json(broadcast);
@@ -143,7 +650,10 @@ router.post('/broadcasts/:id/approve', async (req: Request, res: Response) => {
   try {
     const broadcast = await Broadcast.findByIdAndUpdate(
       req.params.id,
-      { approvalStatus: 'approved' },
+      {
+        approvalStatus: 'approved',
+        ...(req.body.draftedText ? { draftedText: req.body.draftedText } : {})
+      },
       { new: true }
     );
     if (!broadcast) {
@@ -158,8 +668,8 @@ router.post('/broadcasts/:id/approve', async (req: Request, res: Response) => {
 
 router.post('/broadcasts/:id/send', async (req: Request, res: Response) => {
   try {
-    const broadcast = await sendApprovedBroadcast(req.params.id.toString());
-    res.json(broadcast);
+    const result = await sendApprovedBroadcast(req.params.id.toString());
+    res.json(result);
   } catch (error: any) {
     res.status(400).json({ error: error.message || 'Failed to send broadcast' });
   }

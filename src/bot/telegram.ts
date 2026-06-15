@@ -2,6 +2,7 @@ import TelegramBot from 'node-telegram-bot-api';
 import type { Application } from 'express';
 import AuditLog from '../models/AuditLog';
 import MessageModel from '../models/Message';
+import WebhookEvent from '../models/WebhookEvent';
 import {
   getOrCreateSession,
   getSession,
@@ -43,6 +44,7 @@ import {
 } from '../channels/telegram/telegramAdapter';
 import { handleIncomingMessage } from '../services/communication/communicationRouter';
 import { logDelivery } from '../services/communication/deliveryService';
+import { DEFAULT_SCHOOL_ID } from '../config/school';
 
 const token = process.env.TELEGRAM_BOT_TOKEN as string;
 
@@ -98,7 +100,7 @@ const sendCoreResponse = async (
   await logDelivery({
     messageId: response.outgoingMessageId,
     channel: 'telegram',
-    provider: 'telegram',
+    provider: 'telegram_bot',
     providerMessageId: sent.message_id.toString(),
     eventType: 'outbound_sent',
     status: 'sent',
@@ -752,7 +754,61 @@ export const initBot = async (app: Application): Promise<TelegramBot> => {
 
       // Respond 200 immediately — Telegram retries if we take > 5s
       res.sendStatus(200);
-      bot.processUpdate(req.body);
+
+      const update = req.body as TelegramBot.Update;
+      const providerEventId = update.update_id?.toString() || `${Date.now()}`;
+      const message = update.message;
+      const webhookEvent = {
+        schoolId: DEFAULT_SCHOOL_ID,
+        channel: 'telegram' as const,
+        provider: 'telegram_bot',
+        providerEventId,
+        eventType: message?.text ? 'message' : 'telegram_update',
+        rawPayload: {
+          update_id: update.update_id,
+          message_id: message?.message_id,
+          chat_id: message?.chat.id,
+          from_id: message?.from?.id,
+          has_text: Boolean(message?.text),
+          has_contact: Boolean(message?.contact)
+        }
+      };
+
+      WebhookEvent.findOneAndUpdate(
+        {
+          schoolId: webhookEvent.schoolId,
+          channel: webhookEvent.channel,
+          provider: webhookEvent.provider,
+          providerEventId: webhookEvent.providerEventId
+        },
+        {
+          $setOnInsert: webhookEvent,
+          $set: { status: 'received', errorMessage: '' }
+        },
+        { upsert: true, new: true }
+      )
+        .then(async (event) => {
+          try {
+            bot.processUpdate(update);
+            await WebhookEvent.updateOne(
+              { _id: event._id },
+              { $set: { status: 'processed', processedAt: new Date() } }
+            );
+          } catch (error: any) {
+            await WebhookEvent.updateOne(
+              { _id: event._id },
+              {
+                $set: {
+                  status: 'failed',
+                  processedAt: new Date(),
+                  errorMessage: error?.message || 'Telegram update processing failed'
+                }
+              }
+            );
+            logger.error({ err: error }, 'Telegram webhook processing failed');
+          }
+        })
+        .catch((error) => logger.error({ err: error }, 'Telegram webhook event logging failed'));
     });
 
     logger.info({ webhookUrl }, 'SchoolBridge bot ready via webhook');

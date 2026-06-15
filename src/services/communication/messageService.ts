@@ -15,6 +15,7 @@ interface RecordOutgoingArgs {
   channel: 'telegram' | 'whatsapp' | 'dashboard';
   conversationId: Types.ObjectId;
   senderName?: string;
+  senderRole?: 'admin' | 'assistant' | 'system' | 'teacher';
   body: string;
   providerMessageId?: string;
   aiGenerated?: boolean;
@@ -57,6 +58,7 @@ export const recordOutgoingMessage = async ({
   channel,
   conversationId,
   senderName = 'SchoolBridge Bot',
+  senderRole,
   body,
   providerMessageId = '',
   aiGenerated = false,
@@ -67,7 +69,7 @@ export const recordOutgoingMessage = async ({
     schoolId: schoolId || DEFAULT_SCHOOL_ID,
     channel,
     direction: 'outgoing',
-    senderRole: aiGenerated ? 'assistant' : 'system',
+    senderRole: senderRole || (aiGenerated ? 'assistant' : 'system'),
     senderName,
     body,
     messageType: 'text',
@@ -80,4 +82,3 @@ export const recordOutgoingMessage = async ({
   await touchConversation(conversationId);
   return message;
 };
-

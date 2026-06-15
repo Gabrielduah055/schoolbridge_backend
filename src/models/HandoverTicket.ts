@@ -9,6 +9,11 @@ export interface IHandoverTicket extends Document {
   status: 'open' | 'assigned' | 'resolved' | 'closed';
   assignedTo: string;
   internalNotes: string;
+  notes: Array<{
+    text: string;
+    createdBy: string;
+    createdAt: Date;
+  }>;
   aiSuggestedReply: string;
   resolvedAt: Date | null;
   createdAt: Date;
@@ -39,6 +44,13 @@ const HandoverTicketSchema = new Schema<IHandoverTicket>(
     },
     assignedTo: { type: String, default: '' },
     internalNotes: { type: String, default: '' },
+    notes: [
+      {
+        text: { type: String, default: '' },
+        createdBy: { type: String, default: 'Admin' },
+        createdAt: { type: Date, default: Date.now }
+      }
+    ],
     aiSuggestedReply: { type: String, default: '' },
     resolvedAt: { type: Date, default: null }
   },
@@ -48,4 +60,3 @@ const HandoverTicketSchema = new Schema<IHandoverTicket>(
 HandoverTicketSchema.index({ schoolId: 1, status: 1, createdAt: -1 });
 
 export default mongoose.model<IHandoverTicket>('HandoverTicket', HandoverTicketSchema);
-
