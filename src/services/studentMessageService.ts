@@ -6,6 +6,8 @@ import Message from '../models/Message';
 import { getPhoneLookupCandidates } from '../utils/phone';
 import { type TeacherContext } from './teacherAuthService';
 import { detectMessageIntent } from './broadcastService';
+import { DEFAULT_SCHOOL_ID } from '../config/school';
+import { logDelivery } from './communication/deliveryService';
 import logger from '../utils/logger';
 
 // ─── Student name resolution ──────────────────────────────────────────────────
@@ -67,7 +69,15 @@ const logIndividualMessage = async (
   extractedMessage: string,
   status: 'sent' | 'failed'
 ): Promise<void> => {
-  await Message.create({
+  const message = await Message.create({
+    schoolId: DEFAULT_SCHOOL_ID,
+    channel: 'telegram',
+    direction: 'outgoing',
+    senderRole: 'teacher',
+    senderName: ctx.teacher.fullName,
+    body: extractedMessage,
+    messageType: 'text',
+    aiGenerated: false,
     senderType: 'teacher',
     senderId: ctx.teacher._id,
     recipientType: 'individual',
@@ -78,6 +88,18 @@ const logIndividualMessage = async (
     failedTo: status === 'failed' ? [studentId] : [],
     status,
     sentAt: new Date()
+  });
+
+  await logDelivery({
+    messageId: message._id as Types.ObjectId,
+    channel: 'telegram',
+    provider: 'telegram',
+    eventType: 'individual_message_summary',
+    status,
+    rawPayload: {
+      studentId: studentId.toString(),
+      className: ctx.className
+    }
   });
 };
 
@@ -251,6 +273,14 @@ export const executeIndividualMessageJob = async (
   }
 
   await Message.create({
+    schoolId: DEFAULT_SCHOOL_ID,
+    channel: 'telegram',
+    direction: 'outgoing',
+    senderRole: 'teacher',
+    senderName: 'Teacher',
+    body: message,
+    messageType: 'text',
+    aiGenerated: false,
     senderType: 'teacher',
     senderId: teacherId,
     recipientType: 'individual',
@@ -274,4 +304,3 @@ export const executeIndividualMessageJob = async (
     logger.warn({ teacherChatId }, 'Could not notify teacher of individual job result');
   }
 };
-
