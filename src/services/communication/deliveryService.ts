@@ -56,7 +56,6 @@ export const logDelivery = async ({
       $setOnInsert: {
         schoolId,
         channel,
-        provider,
         identifier,
         displayName
       },
