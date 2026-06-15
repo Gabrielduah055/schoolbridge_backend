@@ -1,7 +1,7 @@
 import TelegramBot from 'node-telegram-bot-api';
 import type { Application } from 'express';
-import { chatWithSchoolAgent } from '../agents/schoolAgent';
 import AuditLog from '../models/AuditLog';
+import MessageModel from '../models/Message';
 import {
   getOrCreateSession,
   getSession,
@@ -37,6 +37,12 @@ import { normalizePhoneNumber } from '../utils/phone';
 import { checkRateLimit, secondsUntilReset } from '../utils/rateLimiter';
 import { Types } from 'mongoose';
 import logger from '../utils/logger';
+import {
+  normalizeTelegramMessage,
+  upsertTelegramIdentity
+} from '../channels/telegram/telegramAdapter';
+import { handleIncomingMessage } from '../services/communication/communicationRouter';
+import { logDelivery } from '../services/communication/deliveryService';
 
 const token = process.env.TELEGRAM_BOT_TOKEN as string;
 
@@ -68,6 +74,36 @@ const safeSendMessage = async (
   } catch (error) {
     logger.error({ err: sanitizeTelegramError(error) }, 'Telegram send failed');
   }
+};
+
+const sendCoreResponse = async (
+  chatId: string,
+  response: Awaited<ReturnType<typeof handleIncomingMessage>>
+): Promise<void> => {
+  const sent = await bot.sendMessage(chatId, response.body, { parse_mode: 'Markdown' });
+
+  if (!response.outgoingMessageId) return;
+
+  await MessageModel.updateOne(
+    { _id: response.outgoingMessageId },
+    {
+      $set: {
+        status: 'sent',
+        providerMessageId: sent.message_id.toString(),
+        sentAt: new Date()
+      }
+    }
+  );
+
+  await logDelivery({
+    messageId: response.outgoingMessageId,
+    channel: 'telegram',
+    provider: 'telegram',
+    providerMessageId: sent.message_id.toString(),
+    eventType: 'outbound_sent',
+    status: 'sent',
+    rawPayload: sent as unknown as Record<string, unknown>
+  });
 };
 
 const buildContactKeyboard = (): TelegramBot.ReplyKeyboardMarkup => ({
@@ -319,6 +355,9 @@ const handleContactMessage = async (msg: TelegramBot.Message) => {
       normalizedPhone,
       new Types.ObjectId(teacher.teacherId)
     );
+    await upsertTelegramIdentity(msg, 'teacher', normalizedPhone, {
+      teacherId: new Types.ObjectId(teacher.teacherId)
+    });
     await writeAuditLog('verification_success', chatId, { phone: normalizedPhone });
     await sendTeacherGreeting(chatId, teacher);
     return;
@@ -329,6 +368,7 @@ const handleContactMessage = async (msg: TelegramBot.Message) => {
 
   if (parent) {
     await setSessionStatus(chatId, 'parent', normalizedPhone);
+    await upsertTelegramIdentity(msg, 'parent', normalizedPhone);
     await writeAuditLog('verification_success', chatId, { phone: normalizedPhone });
     await sendParentGreeting(chatId, parent);
     return;
@@ -336,6 +376,7 @@ const handleContactMessage = async (msg: TelegramBot.Message) => {
 
   // ── Step 3: Not found anywhere → visitor ─────────────────────────────────
   await setSessionStatus(chatId, 'visitor', normalizedPhone);
+  await upsertTelegramIdentity(msg, 'visitor', normalizedPhone);
   await writeAuditLog('verification_failed', chatId, { phone: normalizedPhone, severity: 'warn' });
 
   await safeSendMessage(
@@ -614,16 +655,10 @@ bot.on('message', async (msg) => {
       }
 
       // Authorized — pass through to AI as teacher role
-      const history = loadHistory(session);
-      history.push({ role: 'user', content: messageText });
-      const aiResponse = await chatWithSchoolAgent(
-        history,
-        'teacher',
-        session.phone ?? '',
-        ctx.teacher.fullName
-      );
-      await addToConversationHistory(chatId, messageText, aiResponse);
-      await safeSendMessage(chatId, aiResponse, { parse_mode: 'Markdown' });
+      const normalized = normalizeTelegramMessage(msg, session);
+      const coreResponse = await handleIncomingMessage(normalized, 'teacher');
+      await sendCoreResponse(chatId, coreResponse);
+      await addToConversationHistory(chatId, messageText, coreResponse.body);
       logger.info({ userRole: 'teacher', className: ctx.className }, 'Teacher message handled');
       return;
     }
@@ -655,6 +690,14 @@ bot.on('message', async (msg) => {
     if (handledByAccessGuard) return;
 
     // Load history from DB via service
+    const normalized = normalizeTelegramMessage(msg, session);
+    const coreResponse = await handleIncomingMessage(
+      normalized,
+      isParent ? 'parent' : 'visitor'
+    );
+    await sendCoreResponse(chatId, coreResponse);
+    await addToConversationHistory(chatId, messageText, coreResponse.body);
+    /*
     const history = loadHistory(session);
     history.push({ role: 'user', content: messageText });
 
@@ -664,6 +707,7 @@ bot.on('message', async (msg) => {
     await addToConversationHistory(chatId, messageText, aiResponse);
 
     await safeSendMessage(chatId, aiResponse, { parse_mode: 'Markdown' });
+    */
 
     logger.info({ userRole, userName }, 'Message handled');
 

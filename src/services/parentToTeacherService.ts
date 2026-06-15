@@ -7,6 +7,8 @@ import TelegramIdentity from '../models/TelegramIdentity';
 import Message from '../models/Message';
 import { getPhoneLookupCandidates } from '../utils/phone';
 import { chatWithSchoolAgent } from '../agents/schoolAgent';
+import { DEFAULT_SCHOOL_ID } from '../config/school';
+import { logDelivery } from './communication/deliveryService';
 import logger from '../utils/logger';
 
 // ─── Intent detection ─────────────────────────────────────────────────────────
@@ -144,7 +146,15 @@ const logParentToTeacherMessage = async (
   message: string,
   status: 'sent' | 'failed'
 ): Promise<void> => {
-  await Message.create({
+  const savedMessage = await Message.create({
+    schoolId: DEFAULT_SCHOOL_ID,
+    channel: 'telegram',
+    direction: 'outgoing',
+    senderRole: 'parent',
+    senderName: 'Parent',
+    body: message,
+    messageType: 'text',
+    aiGenerated: false,
     senderType:    'parent',
     senderId:      studentId,       // child's Student document as sender reference
     recipientType: 'teacher',
@@ -156,6 +166,19 @@ const logParentToTeacherMessage = async (
     failedTo:      [],
     status,
     sentAt: new Date()
+  });
+
+  await logDelivery({
+    messageId: savedMessage._id as Types.ObjectId,
+    channel: 'telegram',
+    provider: 'telegram',
+    eventType: 'parent_to_teacher_summary',
+    status,
+    rawPayload: {
+      studentId: studentId.toString(),
+      teacherId: teacherId.toString(),
+      className
+    }
   });
 };
 

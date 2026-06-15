@@ -3,9 +3,13 @@ import { Types } from 'mongoose';
 import Student from '../models/Students';
 import TelegramIdentity from '../models/TelegramIdentity';
 import Message from '../models/Message';
+import Broadcast from '../models/Broadcast';
+import MessageRecipient from '../models/MessageRecipient';
 import { getPhoneLookupCandidates } from '../utils/phone';
 import { chatWithSchoolAgent } from '../agents/schoolAgent';
 import { type TeacherContext } from './teacherAuthService';
+import { DEFAULT_SCHOOL_ID } from '../config/school';
+import { logDelivery } from './communication/deliveryService';
 import logger from '../utils/logger';
 
 // ─── Time guard ───────────────────────────────────────────────────────────────
@@ -276,7 +280,15 @@ export const logBroadcast = async (
         ? 'sent'
         : 'partial';
 
-  await Message.create({
+  const message = await Message.create({
+    schoolId: DEFAULT_SCHOOL_ID,
+    channel: 'telegram',
+    direction: 'outgoing',
+    senderRole: 'teacher',
+    senderName: ctx.teacher.fullName,
+    body: extractedMessage,
+    messageType: 'text',
+    aiGenerated: false,
     senderType: 'teacher',
     senderId: ctx.teacher._id,
     recipientType: 'broadcast',
@@ -286,6 +298,62 @@ export const logBroadcast = async (
     failedTo: failed,
     status,
     sentAt: new Date()
+  });
+
+  const broadcast = await Broadcast.create({
+    schoolId: DEFAULT_SCHOOL_ID,
+    createdBy: ctx.teacher._id,
+    createdByRole: 'teacher',
+    audienceType: 'class',
+    classId: ctx.assignedClass._id,
+    title: `${ctx.className} broadcast`,
+    originalText: extractedMessage,
+    draftedText: extractedMessage,
+    approvalStatus: 'approved',
+    status,
+    channels: ['telegram'],
+    sentAt: new Date()
+  });
+
+  const students = await Student.find({
+    _id: { $in: [...delivered, ...failed] }
+  }).select('name parentPhone parentPhone2');
+
+  const studentById = new Map(students.map(student => [student._id.toString(), student]));
+  const recipientRows = [
+    ...delivered.map(studentId => ({ studentId, status: 'sent' as const })),
+    ...failed.map(studentId => ({ studentId, status: 'failed' as const }))
+  ].map(({ studentId, status: deliveryStatus }) => {
+    const student = studentById.get(studentId.toString());
+    return {
+      broadcastId: broadcast._id,
+      messageId: message._id,
+      recipientName: student?.name || '',
+      recipientPhone: student?.parentPhone || student?.parentPhone2 || '',
+      recipientRole: 'parent',
+      studentId,
+      classId: ctx.assignedClass._id,
+      channel: 'telegram',
+      status: deliveryStatus,
+      errorMessage: deliveryStatus === 'failed' ? 'Parent was not reachable on Telegram' : ''
+    };
+  });
+
+  if (recipientRows.length > 0) {
+    await MessageRecipient.insertMany(recipientRows);
+  }
+
+  await logDelivery({
+    messageId: message._id as Types.ObjectId,
+    channel: 'telegram',
+    provider: 'telegram',
+    eventType: 'broadcast_summary',
+    status: status === 'sent' || status === 'failed' ? status : 'unknown',
+    rawPayload: {
+      broadcastId: broadcast._id.toString(),
+      delivered: delivered.length,
+      failed: failed.length
+    }
   });
 };
 
@@ -484,4 +552,3 @@ export const executeBroadcastJob = async (
     'Scheduled broadcast executed'
   );
 };
-

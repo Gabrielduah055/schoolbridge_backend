@@ -15,6 +15,7 @@ import logger from './utils/logger';
 import knowledgeRoutes from './routes/knowledge';
 import chatRoutes from './routes/chat';
 import studentRoutes from './routes/students';
+import communicationRoutes from './routes/communication';
 
 dns.setServers(['8.8.8.8', '1.1.1.1']);
 
@@ -38,6 +39,7 @@ app.use('/api/chat', chatRoutes);
 // Protected routes — require Authorization: Bearer <ADMIN_API_KEY>
 app.use('/api/students',  requireApiKey, studentRoutes);
 app.use('/api/knowledge', requireApiKey, knowledgeRoutes);
+app.use('/api', requireApiKey, communicationRoutes);
 
 app.get('/', (req, res) => {
   res.json({ message: 'SchoolBridge API is running 🏫🚀' });
