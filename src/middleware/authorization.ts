@@ -15,7 +15,8 @@ import logger from '../utils/logger';
  * for this scale. Upgrade to JWT if you add multi-staff role management.
  */
 export const requireApiKey = (req: Request, res: Response, next: NextFunction): void => {
-  const apiKey = process.env.ADMIN_API_KEY;
+  // Trim to guard against invisible characters (\r, spaces) from copy-paste or Windows line endings
+  const apiKey = process.env.ADMIN_API_KEY?.trim();
 
   if (!apiKey) {
     // Misconfigured server — fail closed, not open
@@ -26,10 +27,14 @@ export const requireApiKey = (req: Request, res: Response, next: NextFunction): 
 
   const authHeader = req.headers['authorization'];
   const token      = authHeader?.startsWith('Bearer ')
-    ? authHeader.slice(7)
+    ? authHeader.slice(7).trim()
     : null;
 
   if (!token || token !== apiKey) {
+    logger.warn(
+      { tokenLen: token?.length, keyLen: apiKey.length, path: req.path },
+      'API key mismatch — check for invisible chars or wrong value'
+    );
     res.status(401).json({ error: 'Unauthorized. Valid API key required.' });
     return;
   }
