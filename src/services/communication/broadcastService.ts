@@ -36,6 +36,22 @@ interface RecipientCandidate {
   targetClass?: string;
 }
 
+interface BroadcastActor {
+  id: string;
+  name: string;
+}
+
+export const cleanBroadcastText = (value: string) => {
+  const text = value
+    .replace(/^here(?:'s| is)\s+(?:a\s+)?(?:polished|refined|revised)\s+version\s+of\s+your\s+broadcast:?\s*/i, '')
+    .replace(/^sure,?\s+i\s+can\s+help.*?\n+/i, '')
+    .replace(/would you like me to .*$/ims, '')
+    .replace(/^\s*-{3,}\s*/m, '')
+    .trim();
+
+  return text || value.trim();
+};
+
 export const createDraft = async ({
   schoolId = DEFAULT_SCHOOL_ID,
   createdBy,
@@ -56,7 +72,7 @@ export const createDraft = async ({
       finalDraft = await chatWithSchoolAgent(
         [{
           role: 'user',
-          content: `Polish this school broadcast. Keep it clear, professional, brief, and ready to send:\n\n${originalText}`
+          content: `Polish this school broadcast. Return only the final announcement text that parents should receive. Do not include assistant commentary, explanations, labels, questions, markdown fences, or phrases like "Here's a polished version" or "Would you like me to adjust".\n\n${originalText}`
         }],
         createdByRole,
         '',
@@ -68,6 +84,8 @@ export const createDraft = async ({
     }
   }
 
+  finalDraft = cleanBroadcastText(finalDraft);
+
   return Broadcast.create({
     schoolId,
     createdBy,
@@ -77,7 +95,7 @@ export const createDraft = async ({
     targetClass,
     recipientPhone,
     title,
-    originalText,
+    originalText: cleanBroadcastText(originalText),
     draftedText: finalDraft,
     approvalStatus: 'pending_approval',
     status: 'draft',
@@ -137,7 +155,7 @@ const resolveRecipients = async (broadcast: any): Promise<RecipientCandidate[]> 
   return [];
 };
 
-export const sendApprovedBroadcast = async (broadcastId: string) => {
+export const sendApprovedBroadcast = async (broadcastId: string, actor?: BroadcastActor) => {
   const broadcast = await Broadcast.findById(broadcastId);
 
   if (!broadcast) {
@@ -155,7 +173,7 @@ export const sendApprovedBroadcast = async (broadcastId: string) => {
   broadcast.status = 'sending';
   await broadcast.save();
 
-  const body = broadcast.draftedText || broadcast.originalText;
+  const body = cleanBroadcastText(broadcast.draftedText || broadcast.originalText);
   const recipients = await resolveRecipients(broadcast);
   let sentCount = 0;
   let failedCount = 0;
@@ -253,6 +271,10 @@ export const sendApprovedBroadcast = async (broadcastId: string) => {
 
   const totalRecipients = recipients.length;
   broadcast.sentAt = new Date();
+  if (actor && Types.ObjectId.isValid(actor.id)) {
+    broadcast.sentBy = new Types.ObjectId(actor.id);
+    broadcast.sentByName = actor.name;
+  }
   broadcast.status = totalRecipients === 0 || sentCount === 0
     ? 'failed'
     : failedCount > 0 || pendingCount > 0

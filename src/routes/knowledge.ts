@@ -5,6 +5,8 @@ import * as XLSX from 'xlsx';
 import fs from 'fs';
 import path from 'path';
 import Knowledge from '../models/Knowledge';
+import { requirePermission } from '../middleware/authorization';
+import { PERMISSIONS } from '../config/permissions';
 
 const router = Router();
 const uploadDir = './uploads/';
@@ -110,7 +112,7 @@ const extractText = async (filePath: string, mimetype: string): Promise<string> 
 };
 
 // Upload and train document
-router.post('/upload', upload.single('file'), async (req: Request, res: Response) => {
+router.post('/upload', requirePermission(PERMISSIONS.KNOWLEDGE_MANAGE), upload.single('file'), async (req: Request, res: Response) => {
   try {
     const { category } = req.body;
     const file = req.file;
@@ -171,7 +173,7 @@ router.post('/upload', upload.single('file'), async (req: Request, res: Response
 });
 
 // Get all knowledge documents
-router.get('/', async (req: Request, res: Response) => {
+router.get('/', requirePermission(PERMISSIONS.KNOWLEDGE_VIEW), async (req: Request, res: Response) => {
   try {
     const knowledge = await Knowledge.find()
       .select('-content')
@@ -183,7 +185,7 @@ router.get('/', async (req: Request, res: Response) => {
 });
 
 // Delete knowledge document
-router.delete('/:id', async (req: Request, res: Response) => {
+router.delete('/:id', requirePermission(PERMISSIONS.KNOWLEDGE_MANAGE), async (req: Request, res: Response) => {
   try {
     const knowledge = await Knowledge.findByIdAndDelete(req.params.id);
     if (!knowledge) {
@@ -197,7 +199,7 @@ router.delete('/:id', async (req: Request, res: Response) => {
 });
 
 // Toggle active status
-router.put('/:id/toggle', async (req: Request, res: Response) => {
+router.put('/:id/toggle', requirePermission(PERMISSIONS.KNOWLEDGE_MANAGE), async (req: Request, res: Response) => {
   try {
     const knowledge = await Knowledge.findById(req.params.id);
     if (!knowledge) {

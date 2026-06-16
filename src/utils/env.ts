@@ -40,8 +40,18 @@ const ENV_VARS: EnvVar[] = [
   // ── HTTP API protection ───────────────────────────────────────────────────
   {
     key:      'ADMIN_API_KEY',
+    required: false,
+    hint:     'Deprecated fallback only. Dashboard login should use JWT.'
+  },
+  {
+    key:      'JWT_SECRET',
     required: true,
-    hint:     'Generate with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"'
+    hint:     'Generate with: node -e "console.log(require(\'crypto\').randomBytes(48).toString(\'hex\'))"'
+  },
+  {
+    key:      'JWT_EXPIRES_IN',
+    required: false,
+    hint:     'JWT lifetime, e.g. 7d'
   },
 
   // ── Webhook (only required in production) ─────────────────────────────────
