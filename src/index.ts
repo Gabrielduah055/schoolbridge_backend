@@ -6,7 +6,6 @@ validateEnv();
 
 import express from 'express';
 import cors from 'cors';
-import dns from 'node:dns/promises';
 import connectDB from './config/db';
 import { initBot } from './bot/telegram';
 import { startSchedulerWorker } from './workers/schedulerWorker';
@@ -18,8 +17,6 @@ import knowledgeRoutes from './routes/knowledge';
 import chatRoutes from './routes/chat';
 import studentRoutes from './routes/students';
 import communicationRoutes from './routes/communication';
-
-dns.setServers(['8.8.8.8', '1.1.1.1']);
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
