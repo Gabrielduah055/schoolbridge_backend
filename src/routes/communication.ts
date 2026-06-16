@@ -14,17 +14,19 @@ import Student from '../models/Students';
 import Teacher from '../models/Teacher';
 import ClassModel from '../models/Class';
 import TelegramIdentity from '../models/TelegramIdentity';
-import { createDraft, sendApprovedBroadcast } from '../services/communication/broadcastService';
+import { cleanBroadcastText, createDraft, sendApprovedBroadcast } from '../services/communication/broadcastService';
 import { recordOutgoingMessage } from '../services/communication/messageService';
 import { logDelivery } from '../services/communication/deliveryService';
 import { createTicket } from '../services/communication/handoverService';
+import { requirePermission } from '../middleware/authorization';
+import { PERMISSIONS } from '../config/permissions';
 import { DEFAULT_SCHOOL_ID } from '../config/school';
 import { normalizePhoneNumber } from '../utils/phone';
 
 const router = Router();
 
 const schoolFilter = (req: Request) => ({
-  schoolId: req.query.schoolId?.toString() || DEFAULT_SCHOOL_ID
+  schoolId: req.authUser?.schoolId || req.query.schoolId?.toString() || DEFAULT_SCHOOL_ID
 });
 
 const startOfToday = () => {
@@ -61,7 +63,7 @@ const getIdentityStatus = async (phone: string, role?: 'parent' | 'teacher') => 
   return identity ? 'connected' : 'not_connected';
 };
 
-router.get('/channel-accounts', async (req: Request, res: Response) => {
+router.get('/channel-accounts', requirePermission(PERMISSIONS.CHANNELS_VIEW), async (req: Request, res: Response) => {
   try {
     const accounts = await ChannelAccount.find(schoolFilter(req)).sort({ channel: 1 });
     res.json(accounts);
@@ -70,7 +72,7 @@ router.get('/channel-accounts', async (req: Request, res: Response) => {
   }
 });
 
-router.get('/dashboard/metrics', async (req: Request, res: Response) => {
+router.get('/dashboard/metrics', requirePermission(PERMISSIONS.DASHBOARD_VIEW), async (req: Request, res: Response) => {
   try {
     const schoolId = schoolFilter(req).schoolId;
     const today = startOfToday();
@@ -111,7 +113,7 @@ router.get('/dashboard/metrics', async (req: Request, res: Response) => {
   }
 });
 
-router.get('/parents', async (req: Request, res: Response) => {
+router.get('/parents', requirePermission(PERMISSIONS.PARENTS_VIEW), async (req: Request, res: Response) => {
   try {
     const students = await Student.find({ status: 'active' }).sort({ parentName: 1, class: 1, name: 1 }).lean();
     const parents = new Map<string, any>();
@@ -146,7 +148,7 @@ router.get('/parents', async (req: Request, res: Response) => {
   }
 });
 
-router.get('/teachers', async (_req: Request, res: Response) => {
+router.get('/teachers', requirePermission(PERMISSIONS.TEACHERS_VIEW), async (_req: Request, res: Response) => {
   try {
     const teachers = await Teacher.find({ active: true }).sort({ fullName: 1 }).lean();
     const result = await Promise.all((teachers as any[]).map(async (teacher) => {
@@ -168,7 +170,7 @@ router.get('/teachers', async (_req: Request, res: Response) => {
   }
 });
 
-router.get('/classes', async (_req: Request, res: Response) => {
+router.get('/classes', requirePermission(PERMISSIONS.CLASSES_VIEW), async (_req: Request, res: Response) => {
   try {
     const students = await Student.find({ status: 'active' }).lean();
     const classes = await ClassModel.find({ active: true }).populate('teacherId').lean();
@@ -220,7 +222,7 @@ router.get('/classes', async (_req: Request, res: Response) => {
   }
 });
 
-router.get('/classes/:id/parents', async (req: Request, res: Response) => {
+router.get('/classes/:id/parents', requirePermission(PERMISSIONS.CLASSES_VIEW), async (req: Request, res: Response) => {
   try {
     const classId = req.params.id.toString();
     const classRecord = Types.ObjectId.isValid(classId)
@@ -250,7 +252,7 @@ router.get('/classes/:id/parents', async (req: Request, res: Response) => {
   }
 });
 
-router.get('/teachers/:id/classes', async (req: Request, res: Response) => {
+router.get('/teachers/:id/classes', requirePermission(PERMISSIONS.TEACHERS_VIEW), async (req: Request, res: Response) => {
   try {
     const teacherId = req.params.id.toString();
     const teacher = Types.ObjectId.isValid(teacherId)
@@ -286,7 +288,7 @@ router.get('/teachers/:id/classes', async (req: Request, res: Response) => {
   }
 });
 
-router.get('/conversations', async (req: Request, res: Response) => {
+router.get('/conversations', requirePermission(PERMISSIONS.CONVERSATIONS_VIEW), async (req: Request, res: Response) => {
   try {
     const filter: Record<string, unknown> = schoolFilter(req);
     if (req.query.status) filter.status = req.query.status;
@@ -302,10 +304,10 @@ router.get('/conversations', async (req: Request, res: Response) => {
   }
 });
 
-router.post('/conversations/:id/reply', async (req: Request, res: Response) => {
+router.post('/conversations/:id/reply', requirePermission(PERMISSIONS.CONVERSATIONS_REPLY), async (req: Request, res: Response) => {
   try {
     const body = req.body.body?.toString().trim();
-    const senderName = req.body.senderName?.toString().trim() || 'Admin';
+    const senderName = req.body.senderName?.toString().trim() || req.authUser?.name || 'Admin';
     const senderRole = req.body.senderRole === 'admin' ? 'admin' : 'admin';
 
     if (!body) {
@@ -396,7 +398,7 @@ router.post('/conversations/:id/reply', async (req: Request, res: Response) => {
   }
 });
 
-router.post('/conversations/:id/assign', async (req: Request, res: Response) => {
+router.post('/conversations/:id/assign', requirePermission(PERMISSIONS.CONVERSATIONS_ASSIGN), async (req: Request, res: Response) => {
   try {
     const assignedTo = req.body.assignedTo?.toString().trim();
     if (!assignedTo) {
@@ -419,7 +421,7 @@ router.post('/conversations/:id/assign', async (req: Request, res: Response) => 
   }
 });
 
-router.post('/conversations/:id/resolve', async (req: Request, res: Response) => {
+router.post('/conversations/:id/resolve', requirePermission(PERMISSIONS.CONVERSATIONS_RESOLVE), async (req: Request, res: Response) => {
   try {
     const conversation = await Conversation.findByIdAndUpdate(
       req.params.id,
@@ -442,7 +444,7 @@ router.post('/conversations/:id/resolve', async (req: Request, res: Response) =>
   }
 });
 
-router.post('/conversations/:id/reopen', async (req: Request, res: Response) => {
+router.post('/conversations/:id/reopen', requirePermission(PERMISSIONS.CONVERSATIONS_RESOLVE), async (req: Request, res: Response) => {
   try {
     const conversation = await Conversation.findByIdAndUpdate(
       req.params.id,
@@ -459,7 +461,7 @@ router.post('/conversations/:id/reopen', async (req: Request, res: Response) => 
   }
 });
 
-router.post('/conversations/:id/mark-needs-human', async (req: Request, res: Response) => {
+router.post('/conversations/:id/mark-needs-human', requirePermission(PERMISSIONS.CONVERSATIONS_ASSIGN), async (req: Request, res: Response) => {
   try {
     const conversation = await Conversation.findById(req.params.id);
     if (!conversation) {
@@ -482,7 +484,7 @@ router.post('/conversations/:id/mark-needs-human', async (req: Request, res: Res
   }
 });
 
-router.get('/conversations/:id', async (req: Request, res: Response) => {
+router.get('/conversations/:id', requirePermission(PERMISSIONS.CONVERSATIONS_VIEW), async (req: Request, res: Response) => {
   try {
     const conversation = await Conversation.findById(req.params.id);
     if (!conversation) {
@@ -495,7 +497,7 @@ router.get('/conversations/:id', async (req: Request, res: Response) => {
   }
 });
 
-router.get('/conversations/:id/messages', async (req: Request, res: Response) => {
+router.get('/conversations/:id/messages', requirePermission(PERMISSIONS.CONVERSATIONS_VIEW), async (req: Request, res: Response) => {
   try {
     const messages = await Message.find({ conversationId: req.params.id })
       .sort({ createdAt: 1 })
@@ -506,7 +508,7 @@ router.get('/conversations/:id/messages', async (req: Request, res: Response) =>
   }
 });
 
-router.get('/handover-tickets', async (req: Request, res: Response) => {
+router.get('/handover-tickets', requirePermission(PERMISSIONS.HANDOVERS_VIEW), async (req: Request, res: Response) => {
   try {
     const filter: Record<string, unknown> = schoolFilter(req);
     if (req.query.status) filter.status = req.query.status;
@@ -520,7 +522,7 @@ router.get('/handover-tickets', async (req: Request, res: Response) => {
   }
 });
 
-router.post('/handover-tickets/:id/assign', async (req: Request, res: Response) => {
+router.post('/handover-tickets/:id/assign', requirePermission(PERMISSIONS.HANDOVERS_ASSIGN), async (req: Request, res: Response) => {
   try {
     const assignedTo = req.body.assignedTo?.toString().trim();
     if (!assignedTo) {
@@ -535,6 +537,10 @@ router.post('/handover-tickets/:id/assign', async (req: Request, res: Response) 
     }
 
     ticket.assignedTo = assignedTo;
+    if (req.authUser?.id && Types.ObjectId.isValid(req.authUser.id)) {
+      ticket.assignedBy = new Types.ObjectId(req.authUser.id);
+    }
+    ticket.assignedByName = req.authUser?.name || 'Admin';
     if (ticket.status !== 'resolved') ticket.status = 'assigned';
     await ticket.save();
 
@@ -549,10 +555,10 @@ router.post('/handover-tickets/:id/assign', async (req: Request, res: Response) 
   }
 });
 
-router.post('/handover-tickets/:id/note', async (req: Request, res: Response) => {
+router.post('/handover-tickets/:id/note', requirePermission(PERMISSIONS.HANDOVERS_ASSIGN), async (req: Request, res: Response) => {
   try {
     const note = req.body.note?.toString().trim();
-    const createdBy = req.body.createdBy?.toString().trim() || 'Admin';
+    const createdBy = req.body.createdBy?.toString().trim() || req.authUser?.name || 'Admin';
     if (!note) {
       res.status(400).json({ error: 'note is required' });
       return;
@@ -578,13 +584,15 @@ router.post('/handover-tickets/:id/note', async (req: Request, res: Response) =>
   }
 });
 
-router.post('/handover-tickets/:id/resolve', async (req: Request, res: Response) => {
+router.post('/handover-tickets/:id/resolve', requirePermission(PERMISSIONS.HANDOVERS_RESOLVE), async (req: Request, res: Response) => {
   try {
     const ticket = await HandoverTicket.findByIdAndUpdate(
       req.params.id,
       {
         status: 'resolved',
         resolvedAt: new Date(),
+        ...(req.authUser?.id && Types.ObjectId.isValid(req.authUser.id) ? { resolvedBy: new Types.ObjectId(req.authUser.id) } : {}),
+        resolvedByName: req.authUser?.name || 'Admin',
         internalNotes: req.body.internalNotes ?? undefined
       },
       { new: true }
@@ -607,7 +615,7 @@ router.post('/handover-tickets/:id/resolve', async (req: Request, res: Response)
   }
 });
 
-router.get('/broadcasts', async (req: Request, res: Response) => {
+router.get('/broadcasts', requirePermission(PERMISSIONS.BROADCASTS_VIEW), async (req: Request, res: Response) => {
   try {
     const broadcasts = await Broadcast.find(schoolFilter(req))
       .sort({ createdAt: -1 })
@@ -618,7 +626,7 @@ router.get('/broadcasts', async (req: Request, res: Response) => {
   }
 });
 
-router.post('/broadcasts/draft', async (req: Request, res: Response) => {
+router.post('/broadcasts/draft', requirePermission(PERMISSIONS.BROADCASTS_CREATE), async (req: Request, res: Response) => {
   try {
     const { createdByRole, audienceType, originalText } = req.body;
     if (!createdByRole || !audienceType || !originalText) {
@@ -630,6 +638,7 @@ router.post('/broadcasts/draft', async (req: Request, res: Response) => {
     const broadcast = await createDraft({
       schoolId: req.body.schoolId || DEFAULT_SCHOOL_ID,
       createdByRole,
+      createdBy: req.authUser?.id && Types.ObjectId.isValid(req.authUser.id) ? new Types.ObjectId(req.authUser.id) : undefined,
       audienceType,
       classId: classObjectId ?? undefined,
       targetClass: classObjectId ? '' : req.body.classId?.toString() || req.body.targetClass?.toString() || '',
@@ -646,13 +655,16 @@ router.post('/broadcasts/draft', async (req: Request, res: Response) => {
   }
 });
 
-router.post('/broadcasts/:id/approve', async (req: Request, res: Response) => {
+router.post('/broadcasts/:id/approve', requirePermission(PERMISSIONS.BROADCASTS_APPROVE), async (req: Request, res: Response) => {
   try {
     const broadcast = await Broadcast.findByIdAndUpdate(
       req.params.id,
       {
         approvalStatus: 'approved',
-        ...(req.body.draftedText ? { draftedText: req.body.draftedText } : {})
+        approvedAt: new Date(),
+        ...(req.authUser?.id && Types.ObjectId.isValid(req.authUser.id) ? { approvedBy: new Types.ObjectId(req.authUser.id) } : {}),
+        approvedByName: req.authUser?.name || 'Admin',
+        ...(req.body.draftedText ? { draftedText: cleanBroadcastText(req.body.draftedText.toString()) } : {})
       },
       { new: true }
     );
@@ -666,16 +678,18 @@ router.post('/broadcasts/:id/approve', async (req: Request, res: Response) => {
   }
 });
 
-router.post('/broadcasts/:id/send', async (req: Request, res: Response) => {
+router.post('/broadcasts/:id/send', requirePermission(PERMISSIONS.BROADCASTS_SEND), async (req: Request, res: Response) => {
   try {
-    const result = await sendApprovedBroadcast(req.params.id.toString());
+    const result = await sendApprovedBroadcast(req.params.id.toString(), req.authUser
+      ? { id: req.authUser.id, name: req.authUser.name }
+      : undefined);
     res.json(result);
   } catch (error: any) {
     res.status(400).json({ error: error.message || 'Failed to send broadcast' });
   }
 });
 
-router.get('/broadcasts/:id/recipients', async (req: Request, res: Response) => {
+router.get('/broadcasts/:id/recipients', requirePermission(PERMISSIONS.BROADCASTS_VIEW), async (req: Request, res: Response) => {
   try {
     const recipients = await MessageRecipient.find({ broadcastId: req.params.id })
       .sort({ createdAt: 1 });
@@ -685,7 +699,7 @@ router.get('/broadcasts/:id/recipients', async (req: Request, res: Response) => 
   }
 });
 
-router.get('/delivery-logs', async (req: Request, res: Response) => {
+router.get('/delivery-logs', requirePermission(PERMISSIONS.DELIVERY_LOGS_VIEW), async (req: Request, res: Response) => {
   try {
     const logs = await DeliveryLog.find(schoolFilter(req))
       .sort({ createdAt: -1 })
@@ -696,7 +710,7 @@ router.get('/delivery-logs', async (req: Request, res: Response) => {
   }
 });
 
-router.get('/webhook-events', async (req: Request, res: Response) => {
+router.get('/webhook-events', requirePermission(PERMISSIONS.DELIVERY_LOGS_VIEW), async (req: Request, res: Response) => {
   try {
     const events = await WebhookEvent.find(schoolFilter(req))
       .sort({ createdAt: -1 })

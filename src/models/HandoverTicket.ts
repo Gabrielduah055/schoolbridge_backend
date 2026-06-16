@@ -8,6 +8,8 @@ export interface IHandoverTicket extends Document {
   priority: 'low' | 'normal' | 'high' | 'urgent';
   status: 'open' | 'assigned' | 'resolved' | 'closed';
   assignedTo: string;
+  assignedBy?: Types.ObjectId;
+  assignedByName: string;
   internalNotes: string;
   notes: Array<{
     text: string;
@@ -16,6 +18,8 @@ export interface IHandoverTicket extends Document {
   }>;
   aiSuggestedReply: string;
   resolvedAt: Date | null;
+  resolvedBy?: Types.ObjectId;
+  resolvedByName: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -43,6 +47,8 @@ const HandoverTicketSchema = new Schema<IHandoverTicket>(
       index: true
     },
     assignedTo: { type: String, default: '' },
+    assignedBy: { type: Schema.Types.ObjectId, ref: 'AdminUser', default: null },
+    assignedByName: { type: String, default: '' },
     internalNotes: { type: String, default: '' },
     notes: [
       {
@@ -52,7 +58,9 @@ const HandoverTicketSchema = new Schema<IHandoverTicket>(
       }
     ],
     aiSuggestedReply: { type: String, default: '' },
-    resolvedAt: { type: Date, default: null }
+    resolvedAt: { type: Date, default: null },
+    resolvedBy: { type: Schema.Types.ObjectId, ref: 'AdminUser', default: null },
+    resolvedByName: { type: String, default: '' }
   },
   { timestamps: true }
 );

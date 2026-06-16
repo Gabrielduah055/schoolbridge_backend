@@ -10,8 +10,10 @@ import dns from 'node:dns/promises';
 import connectDB from './config/db';
 import { initBot } from './bot/telegram';
 import { startSchedulerWorker } from './workers/schedulerWorker';
-import { requireApiKey } from './middleware/authorization';
+import { authenticateUser, requirePermission } from './middleware/authorization';
+import { PERMISSIONS } from './config/permissions';
 import logger from './utils/logger';
+import authRoutes from './routes/auth';
 import knowledgeRoutes from './routes/knowledge';
 import chatRoutes from './routes/chat';
 import studentRoutes from './routes/students';
@@ -35,6 +37,7 @@ app.use(express.urlencoded({ extended: false }));
 
 // Public routes
 app.use('/api/chat', chatRoutes);
+app.use('/api/auth', authRoutes);
 
 app.get('/', (req, res) => {
   res.json({ message: 'SchoolBridge API is running 🏫🚀' });
@@ -58,10 +61,10 @@ const main = async () => {
   const bot = await initBot(app);
 
   // Protected routes: mount these after initBot() so Telegram can reach
-  // /api/bot/webhook without the admin API-key middleware blocking it.
-  app.use('/api/students',  requireApiKey, studentRoutes);
-  app.use('/api/knowledge', requireApiKey, knowledgeRoutes);
-  app.use('/api', requireApiKey, communicationRoutes);
+  // /api/bot/webhook without dashboard JWT middleware blocking it.
+  app.use('/api/students', authenticateUser, requirePermission(PERMISSIONS.STUDENTS_VIEW), studentRoutes);
+  app.use('/api/knowledge', authenticateUser, knowledgeRoutes);
+  app.use('/api', authenticateUser, communicationRoutes);
 
   // 3. Start the cron worker — fires every minute to send scheduled notifications
   startSchedulerWorker(bot);

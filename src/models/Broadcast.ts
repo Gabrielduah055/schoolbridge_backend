@@ -15,6 +15,11 @@ export interface IBroadcast extends Document {
   approvalStatus: 'draft' | 'pending_approval' | 'approved' | 'rejected';
   status: 'draft' | 'scheduled' | 'sending' | 'sent' | 'partial' | 'partially_failed' | 'failed' | 'cancelled';
   channels: Array<'telegram' | 'whatsapp'>;
+  approvedBy?: Types.ObjectId;
+  approvedByName: string;
+  approvedAt: Date | null;
+  sentBy?: Types.ObjectId;
+  sentByName: string;
   sentAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
@@ -50,6 +55,11 @@ const BroadcastSchema = new Schema<IBroadcast>(
       index: true
     },
     channels: [{ type: String, enum: ['telegram', 'whatsapp'] }],
+    approvedBy: { type: Schema.Types.ObjectId, ref: 'AdminUser', default: null },
+    approvedByName: { type: String, default: '' },
+    approvedAt: { type: Date, default: null },
+    sentBy: { type: Schema.Types.ObjectId, ref: 'AdminUser', default: null },
+    sentByName: { type: String, default: '' },
     sentAt: { type: Date, default: null }
   },
   { timestamps: true }
