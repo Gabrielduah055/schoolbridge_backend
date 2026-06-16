@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import dns from 'node:dns/promises';
 import logger from '../utils/logger';
 
 const connectDB = async (): Promise<void> => {
@@ -9,6 +10,7 @@ const connectDB = async (): Promise<void> => {
   }
 
   try {
+    dns.setServers(['8.8.8.8', '1.1.1.1']);
     await mongoose.connect(mongoUri);
     logger.info('MongoDB connected');
   } catch (error) {
