@@ -1,6 +1,9 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { Types } from 'mongoose';
+import multer from 'multer';
+import fs from 'fs';
+import path from 'path';
 import bot from '../bot/telegram';
 import ChannelAccount from '../models/ChannelAccount';
 import Conversation from '../models/Conversation';
@@ -24,6 +27,44 @@ import { DEFAULT_SCHOOL_ID } from '../config/school';
 import { normalizePhoneNumber } from '../utils/phone';
 
 const router = Router();
+const broadcastUploadDir = path.join('uploads', 'broadcasts');
+
+if (!fs.existsSync(broadcastUploadDir)) {
+  fs.mkdirSync(broadcastUploadDir, { recursive: true });
+}
+
+const broadcastUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, broadcastUploadDir),
+    filename: (_req, file, cb) => {
+      const safeBase = path.basename(file.originalname).replace(/[^a-zA-Z0-9._-]/g, '_');
+      cb(null, `${Date.now()}-${safeBase}`);
+    }
+  }),
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const allowedMimeTypes = [
+      'application/pdf',
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/vnd.ms-excel',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'application/vnd.ms-powerpoint',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      'text/plain',
+      'text/csv',
+      'image/jpeg',
+      'image/png'
+    ];
+
+    if (allowedMimeTypes.includes(file.mimetype)) {
+      cb(null, true);
+      return;
+    }
+
+    cb(new Error('Broadcast attachments must be PDF, Office, text/CSV, JPG, or PNG files.'));
+  }
+});
 
 const schoolFilter = (req: Request) => ({
   schoolId: req.authUser?.schoolId || req.query.schoolId?.toString() || DEFAULT_SCHOOL_ID
@@ -41,6 +82,21 @@ const toObjectIdOrNull = (value: unknown) => {
 };
 
 const unique = <T>(values: T[]) => Array.from(new Set(values.filter(Boolean)));
+const SENT_BROADCAST_STATUSES = ['sent', 'partial', 'partially_failed'] as const;
+
+const parseTelegramChannels = (value: unknown): Array<'telegram'> => {
+  const channels = Array.isArray(value)
+    ? value
+    : typeof value === 'string'
+      ? value.split(',')
+      : ['telegram'];
+
+  const telegramChannels = channels
+    .map((channel) => channel?.toString().trim())
+    .filter((channel): channel is 'telegram' => channel === 'telegram');
+
+  return telegramChannels.length > 0 ? telegramChannels : ['telegram'];
+};
 
 const getLastConversationAt = async (phone: string) => {
   if (!phone) return null;
@@ -91,7 +147,11 @@ router.get('/dashboard/metrics', requirePermission(PERMISSIONS.DASHBOARD_VIEW), 
       Conversation.countDocuments({ schoolId, status: { $nin: ['resolved', 'failed', 'failed_delivery'] } }),
       HandoverTicket.countDocuments({ schoolId, status: { $in: ['open', 'assigned'] } }),
       DeliveryLog.countDocuments({ schoolId, status: 'failed' }),
-      Broadcast.countDocuments({ schoolId, status: 'sent', sentAt: { $gte: today } }),
+      Broadcast.countDocuments({
+        schoolId,
+        status: { $in: SENT_BROADCAST_STATUSES },
+        sentAt: { $gte: today }
+      }),
       ChannelAccount.findOne({ schoolId, channel: 'telegram' }).sort({ updatedAt: -1 }),
       Conversation.find({ schoolId }).sort({ lastMessageAt: -1, updatedAt: -1 }).limit(6),
       HandoverTicket.find({ schoolId }).sort({ createdAt: -1 }).limit(6)
@@ -170,7 +230,7 @@ router.get('/teachers', requirePermission(PERMISSIONS.TEACHERS_VIEW), async (_re
   }
 });
 
-router.get('/classes', requirePermission(PERMISSIONS.CLASSES_VIEW), async (_req: Request, res: Response) => {
+router.get('/classes', requirePermission(PERMISSIONS.CLASSES_VIEW), async (req: Request, res: Response) => {
   try {
     const students = await Student.find({ status: 'active' }).lean();
     const classes = await ClassModel.find({ active: true }).populate('teacherId').lean();
@@ -213,7 +273,11 @@ router.get('/classes', requirePermission(PERMISSIONS.CLASSES_VIEW), async (_req:
       teacher: item.teacher,
       studentCount: item.studentCount,
       parentContactCount: item.parentPhones.size,
-      recentBroadcastCount: await Broadcast.countDocuments({ targetClass: item.className })
+      recentBroadcastCount: await Broadcast.countDocuments({
+        schoolId: schoolFilter(req).schoolId,
+        targetClass: item.className,
+        status: { $in: SENT_BROADCAST_STATUSES }
+      })
     })));
 
     res.json(response.sort((a, b) => a.className.localeCompare(b.className)));
@@ -626,7 +690,56 @@ router.get('/broadcasts', requirePermission(PERMISSIONS.BROADCASTS_VIEW), async 
   }
 });
 
-router.post('/broadcasts/draft', requirePermission(PERMISSIONS.BROADCASTS_CREATE), async (req: Request, res: Response) => {
+router.get('/broadcasts/metrics', requirePermission(PERMISSIONS.BROADCASTS_VIEW), async (req: Request, res: Response) => {
+  try {
+    const schoolId = schoolFilter(req).schoolId;
+    const today = startOfToday();
+
+    const [
+      totalBroadcasts,
+      sentToday,
+      draftCount,
+      pendingApprovalCount,
+      approvedCount,
+      failedCount,
+      sentRecipients,
+      failedRecipients,
+      skippedRecipients
+    ] = await Promise.all([
+      Broadcast.countDocuments({ schoolId }),
+      Broadcast.countDocuments({
+        schoolId,
+        status: { $in: SENT_BROADCAST_STATUSES },
+        sentAt: { $gte: today }
+      }),
+      Broadcast.countDocuments({ schoolId, status: 'draft' }),
+      Broadcast.countDocuments({ schoolId, approvalStatus: 'pending_approval' }),
+      Broadcast.countDocuments({ schoolId, approvalStatus: 'approved', status: { $in: ['draft', 'scheduled'] } }),
+      Broadcast.countDocuments({ schoolId, status: 'failed' }),
+      MessageRecipient.countDocuments({ status: 'sent' }),
+      MessageRecipient.countDocuments({ status: 'failed' }),
+      MessageRecipient.countDocuments({ status: 'skipped' })
+    ]);
+
+    res.json({
+      totalBroadcasts,
+      sentToday,
+      draftCount,
+      pendingApprovalCount,
+      approvedCount,
+      failedCount,
+      recipientSummary: {
+        sent: sentRecipients,
+        failed: failedRecipients,
+        skipped: skippedRecipients
+      }
+    });
+  } catch {
+    res.status(500).json({ error: 'Failed to fetch broadcast metrics' });
+  }
+});
+
+router.post('/broadcasts/draft', requirePermission(PERMISSIONS.BROADCASTS_CREATE), broadcastUpload.single('attachment'), async (req: Request, res: Response) => {
   try {
     const { createdByRole, audienceType, originalText } = req.body;
     if (!createdByRole || !audienceType || !originalText) {
@@ -635,6 +748,16 @@ router.post('/broadcasts/draft', requirePermission(PERMISSIONS.BROADCASTS_CREATE
     }
 
     const classObjectId = toObjectIdOrNull(req.body.classId);
+    const attachment = req.file
+      ? [{
+          originalName: req.file.originalname,
+          fileName: req.file.filename,
+          filePath: req.file.path,
+          mimeType: req.file.mimetype,
+          size: req.file.size
+        }]
+      : [];
+
     const broadcast = await createDraft({
       schoolId: req.body.schoolId || DEFAULT_SCHOOL_ID,
       createdByRole,
@@ -646,11 +769,15 @@ router.post('/broadcasts/draft', requirePermission(PERMISSIONS.BROADCASTS_CREATE
       title: req.body.title,
       originalText,
       draftedText: req.body.draftedText,
-      channels: (req.body.channels || ['telegram']).filter((channel: string) => channel === 'telegram')
+      attachments: attachment,
+      channels: parseTelegramChannels(req.body.channels)
     });
 
     res.status(201).json(broadcast);
   } catch (error: any) {
+    if (req.file?.path && fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
     res.status(500).json({ error: error.message || 'Failed to create broadcast draft' });
   }
 });

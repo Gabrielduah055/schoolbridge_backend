@@ -12,6 +12,13 @@ export interface IBroadcast extends Document {
   title: string;
   originalText: string;
   draftedText: string;
+  attachments: Array<{
+    originalName: string;
+    fileName: string;
+    filePath: string;
+    mimeType: string;
+    size: number;
+  }>;
   approvalStatus: 'draft' | 'pending_approval' | 'approved' | 'rejected';
   status: 'draft' | 'scheduled' | 'sending' | 'sent' | 'partial' | 'partially_failed' | 'failed' | 'cancelled';
   channels: Array<'telegram' | 'whatsapp'>;
@@ -42,6 +49,15 @@ const BroadcastSchema = new Schema<IBroadcast>(
     title: { type: String, default: '' },
     originalText: { type: String, required: true },
     draftedText: { type: String, default: '' },
+    attachments: [
+      {
+        originalName: { type: String, default: '' },
+        fileName: { type: String, default: '' },
+        filePath: { type: String, default: '' },
+        mimeType: { type: String, default: '' },
+        size: { type: Number, default: 0 }
+      }
+    ],
     approvalStatus: {
       type: String,
       enum: ['draft', 'pending_approval', 'approved', 'rejected'],
