@@ -7,6 +7,8 @@ export interface IBroadcast extends Document {
   createdByRole: 'teacher' | 'admin';
   audienceType: 'whole_school' | 'class' | 'individual' | 'individual_parent' | 'teachers' | 'parents';
   classId?: Types.ObjectId;
+  recipientStudentId?: Types.ObjectId;
+  recipientStudentName: string;
   targetClass: string;
   recipientPhone: string;
   title: string;
@@ -44,6 +46,8 @@ const BroadcastSchema = new Schema<IBroadcast>(
       index: true
     },
     classId: { type: Schema.Types.ObjectId, ref: 'Class', default: null },
+    recipientStudentId: { type: Schema.Types.ObjectId, ref: 'Student', default: null },
+    recipientStudentName: { type: String, default: '' },
     targetClass: { type: String, default: '', index: true },
     recipientPhone: { type: String, default: '', index: true },
     title: { type: String, default: '' },
