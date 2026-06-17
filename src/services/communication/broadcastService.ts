@@ -10,6 +10,7 @@ import { chatWithSchoolAgent } from '../../agents/schoolAgent';
 import { DEFAULT_SCHOOL_ID } from '../../config/school';
 import { normalizePhoneNumber } from '../../utils/phone';
 import { logDelivery } from './deliveryService';
+import { findParentTelegramIdentityByPhone } from '../telegramIdentityReconciliationService';
 
 type BroadcastAudience = 'whole_school' | 'class' | 'individual' | 'individual_parent' | 'teachers' | 'parents';
 
@@ -180,10 +181,12 @@ export const sendApprovedBroadcast = async (broadcastId: string, actor?: Broadca
   let pendingCount = 0;
 
   for (const recipient of recipients) {
-    const identity = await TelegramIdentity.findOne({
-      phone: normalizePhoneNumber(recipient.phone),
-      status: recipient.role
-    });
+    const identity = recipient.role === 'parent'
+      ? await findParentTelegramIdentityByPhone(recipient.phone)
+      : await TelegramIdentity.findOne({
+          phone: normalizePhoneNumber(recipient.phone),
+          status: recipient.role
+        });
 
     const recipientRow = new MessageRecipient({
       broadcastId: broadcast._id,
