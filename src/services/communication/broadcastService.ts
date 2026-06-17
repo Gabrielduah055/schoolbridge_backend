@@ -25,7 +25,16 @@ interface CreateDraftArgs {
   title?: string;
   originalText: string;
   draftedText?: string;
+  attachments?: BroadcastAttachment[];
   channels?: Array<'telegram' | 'whatsapp'>;
+}
+
+interface BroadcastAttachment {
+  originalName: string;
+  fileName: string;
+  filePath: string;
+  mimeType: string;
+  size: number;
 }
 
 interface RecipientCandidate {
@@ -64,6 +73,7 @@ export const createDraft = async ({
   title = '',
   originalText,
   draftedText = '',
+  attachments = [],
   channels = ['telegram']
 }: CreateDraftArgs) => {
   let finalDraft = draftedText || originalText;
@@ -98,6 +108,7 @@ export const createDraft = async ({
     title,
     originalText: cleanBroadcastText(originalText),
     draftedText: finalDraft,
+    attachments,
     approvalStatus: 'pending_approval',
     status: 'draft',
     channels: channels.filter((channel) => channel === 'telegram')
@@ -175,6 +186,7 @@ export const sendApprovedBroadcast = async (broadcastId: string, actor?: Broadca
   await broadcast.save();
 
   const body = cleanBroadcastText(broadcast.draftedText || broadcast.originalText);
+  const attachments = (broadcast.attachments || []) as BroadcastAttachment[];
   const recipients = await resolveRecipients(broadcast);
   let sentCount = 0;
   let failedCount = 0;
@@ -226,6 +238,19 @@ export const sendApprovedBroadcast = async (broadcastId: string, actor?: Broadca
 
     try {
       const sent = await bot.sendMessage(identity.chatId, body);
+
+      for (const attachment of attachments) {
+        await bot.sendDocument(
+          identity.chatId,
+          attachment.filePath,
+          {},
+          {
+            filename: attachment.originalName || attachment.fileName,
+            contentType: attachment.mimeType || undefined
+          }
+        );
+      }
+
       message.status = 'sent';
       message.providerMessageId = sent.message_id.toString();
       await message.save();
