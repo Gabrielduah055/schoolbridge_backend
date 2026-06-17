@@ -20,6 +20,8 @@ interface CreateDraftArgs {
   createdByRole: 'teacher' | 'admin';
   audienceType: BroadcastAudience;
   classId?: Types.ObjectId;
+  recipientStudentId?: Types.ObjectId;
+  recipientStudentName?: string;
   targetClass?: string;
   recipientPhone?: string;
   title?: string;
@@ -68,6 +70,8 @@ export const createDraft = async ({
   createdByRole,
   audienceType,
   classId,
+  recipientStudentId,
+  recipientStudentName = '',
   targetClass = '',
   recipientPhone = '',
   title = '',
@@ -103,6 +107,8 @@ export const createDraft = async ({
     createdByRole,
     audienceType,
     classId,
+    recipientStudentId,
+    recipientStudentName,
     targetClass,
     recipientPhone,
     title,
@@ -128,15 +134,26 @@ const uniqueByPhone = (recipients: RecipientCandidate[]) => {
 
 const parentRecipientsFromStudents = async (filter: Record<string, unknown>) => {
   const students = await Student.find({ status: 'active', ...filter }).lean();
-  return uniqueByPhone(students
-    .filter((student: any) => student.parentPhone)
-    .map((student: any) => ({
-      name: student.parentName || 'Parent',
-      phone: student.parentPhone,
-      role: 'parent' as const,
-      studentId: student._id,
-      targetClass: student.class
-    })));
+  return uniqueByPhone(students.flatMap((student: any) =>
+    [student.parentPhone, student.parentPhone2]
+      .filter(Boolean)
+      .map((phone) => ({
+        name: student.parentName || 'Parent',
+        phone,
+        role: 'parent' as const,
+        studentId: student._id,
+        targetClass: student.class
+      }))
+  ));
+};
+
+const teacherRecipients = async () => {
+  const teachers = await Teacher.find({ active: true }).lean();
+  return uniqueByPhone(teachers.map((teacher: any) => ({
+    name: teacher.fullName,
+    phone: teacher.phone,
+    role: 'teacher' as const
+  })));
 };
 
 const resolveRecipients = async (broadcast: any): Promise<RecipientCandidate[]> => {
@@ -146,22 +163,35 @@ const resolveRecipients = async (broadcast: any): Promise<RecipientCandidate[]> 
     return parentRecipientsFromStudents({ class: targetClass });
   }
 
-  if (broadcast.audienceType === 'whole_school' || broadcast.audienceType === 'parents') {
+  if (broadcast.audienceType === 'parents') {
     return parentRecipientsFromStudents({});
   }
 
+  if (broadcast.audienceType === 'whole_school') {
+    return uniqueByPhone([
+      ...await parentRecipientsFromStudents({}),
+      ...await teacherRecipients()
+    ]);
+  }
+
   if (broadcast.audienceType === 'individual' || broadcast.audienceType === 'individual_parent') {
+    if (broadcast.recipientStudentId) {
+      const student = await Student.findOne({
+        _id: broadcast.recipientStudentId,
+        status: 'active'
+      }).lean();
+
+      if (!student) return [];
+
+      return parentRecipientsFromStudents({ _id: student._id });
+    }
+
     if (!broadcast.recipientPhone) return [];
     return [{ name: 'Parent', phone: broadcast.recipientPhone, role: 'parent' }];
   }
 
   if (broadcast.audienceType === 'teachers') {
-    const teachers = await Teacher.find({ active: true }).lean();
-    return uniqueByPhone(teachers.map((teacher: any) => ({
-      name: teacher.fullName,
-      phone: teacher.phone,
-      role: 'teacher' as const
-    })));
+    return teacherRecipients();
   }
 
   return [];

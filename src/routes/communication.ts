@@ -697,6 +697,7 @@ router.get('/broadcasts/metrics', requirePermission(PERMISSIONS.BROADCASTS_VIEW)
 
     const [
       totalBroadcasts,
+      sentTotal,
       sentToday,
       draftCount,
       pendingApprovalCount,
@@ -707,6 +708,10 @@ router.get('/broadcasts/metrics', requirePermission(PERMISSIONS.BROADCASTS_VIEW)
       skippedRecipients
     ] = await Promise.all([
       Broadcast.countDocuments({ schoolId }),
+      Broadcast.countDocuments({
+        schoolId,
+        status: { $in: SENT_BROADCAST_STATUSES }
+      }),
       Broadcast.countDocuments({
         schoolId,
         status: { $in: SENT_BROADCAST_STATUSES },
@@ -723,6 +728,7 @@ router.get('/broadcasts/metrics', requirePermission(PERMISSIONS.BROADCASTS_VIEW)
 
     res.json({
       totalBroadcasts,
+      sentTotal,
       sentToday,
       draftCount,
       pendingApprovalCount,
@@ -748,6 +754,7 @@ router.post('/broadcasts/draft', requirePermission(PERMISSIONS.BROADCASTS_CREATE
     }
 
     const classObjectId = toObjectIdOrNull(req.body.classId);
+    const recipientStudentId = toObjectIdOrNull(req.body.recipientStudentId);
     const attachment = req.file
       ? [{
           originalName: req.file.originalname,
@@ -764,6 +771,8 @@ router.post('/broadcasts/draft', requirePermission(PERMISSIONS.BROADCASTS_CREATE
       createdBy: req.authUser?.id && Types.ObjectId.isValid(req.authUser.id) ? new Types.ObjectId(req.authUser.id) : undefined,
       audienceType,
       classId: classObjectId ?? undefined,
+      recipientStudentId: recipientStudentId ?? undefined,
+      recipientStudentName: req.body.recipientStudentName?.toString() || '',
       targetClass: classObjectId ? '' : req.body.classId?.toString() || req.body.targetClass?.toString() || '',
       recipientPhone: req.body.recipientPhone?.toString() || '',
       title: req.body.title,
