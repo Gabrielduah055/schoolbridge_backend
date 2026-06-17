@@ -28,6 +28,7 @@ import { handleBroadcastIfIntended } from '../services/broadcastService';
 import { handleStudentMessageIfIntended } from '../services/studentMessageService';
 import { handleScheduledIfIntended } from '../services/scheduledNotificationService';
 import { handleParentToTeacherIfIntended } from '../services/parentToTeacherService';
+import { reconcileTelegramIdentityForChat } from '../services/telegramIdentityReconciliationService';
 import {
   raiseEscalation,
   approveEscalation,
@@ -517,12 +518,15 @@ bot.onText(/\/start/, async (msg) => {
   const firstName = msg.from?.first_name || 'there';
 
   try {
-    const session       = await getOrCreateSession(msg);
+    let session         = await getOrCreateSession(msg);
     const incomingUserId = msg.from?.id?.toString() ?? '';
 
     // Account change detection — different Telegram user on same chatId
     const changed = await detectAndHandleAccountChange(chatId, session, incomingUserId, firstName);
     if (changed) return;
+
+    await reconcileTelegramIdentityForChat(chatId);
+    session = (await getSession(chatId)) ?? session;
 
     if (session.status === 'parent' && session.phone) {
       const parent = await findParentByPhone(session.phone);
@@ -597,7 +601,7 @@ bot.on('message', async (msg) => {
       logger.warn({ chatId, err: sanitizeTelegramError(error) }, 'Telegram typing indicator failed');
     }
 
-    const session = await getSession(chatId);
+    let session = await getSession(chatId);
 
     // No session at all → prompt for phone
     if (!session) {
@@ -611,6 +615,13 @@ bot.on('message', async (msg) => {
       chatId, session, incomingUserId, msg.from?.first_name || 'there'
     );
     if (changed) return;
+
+    await reconcileTelegramIdentityForChat(chatId);
+    session = await getSession(chatId);
+    if (!session) {
+      await sendInitialVerificationRequest(chatId, msg.from?.first_name || 'there');
+      return;
+    }
 
     // Unverified — no phone shared yet
     if (session.status === 'unverified') {

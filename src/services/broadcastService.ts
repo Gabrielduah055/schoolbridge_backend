@@ -1,15 +1,14 @@
 import TelegramBot from 'node-telegram-bot-api';
 import { Types } from 'mongoose';
 import Student from '../models/Students';
-import TelegramIdentity from '../models/TelegramIdentity';
 import Message from '../models/Message';
 import Broadcast from '../models/Broadcast';
 import MessageRecipient from '../models/MessageRecipient';
-import { getPhoneLookupCandidates } from '../utils/phone';
 import { chatWithSchoolAgent } from '../agents/schoolAgent';
 import { type TeacherContext } from './teacherAuthService';
 import { DEFAULT_SCHOOL_ID } from '../config/school';
 import { logDelivery } from './communication/deliveryService';
+import { findParentTelegramIdentityByPhone } from './telegramIdentityReconciliationService';
 import logger from '../utils/logger';
 
 // ─── Time guard ───────────────────────────────────────────────────────────────
@@ -186,12 +185,7 @@ export const resolveClassParents = async (
     let found = false;
 
     for (const phone of phonesToTry) {
-      const candidates = getPhoneLookupCandidates(phone);
-
-      const identity = await TelegramIdentity.findOne({
-        phone: { $in: candidates },
-        status: 'parent'
-      }).select('chatId');
+      const identity = await findParentTelegramIdentityByPhone(phone);
 
       if (identity?.chatId) {
         targets.push({
