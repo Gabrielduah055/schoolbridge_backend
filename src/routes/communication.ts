@@ -134,6 +134,11 @@ const getColumnValue = (row: Record<string, any>, candidates: string[]) => {
 
 const toText = (value: any) => value === undefined || value === null ? '' : value.toString().trim();
 
+const splitList = (value: any) => toText(value)
+  .split(/[,;/|]/)
+  .map((item: string) => item.trim())
+  .filter(Boolean);
+
 const readSheetRows = (filePath: string) => {
   const workbook = XLSX.readFile(filePath);
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
@@ -284,8 +289,8 @@ router.get('/teachers', requirePermission(PERMISSIONS.TEACHERS_VIEW), async (_re
         name: teacher.fullName,
         phone: teacher.phone,
         email: teacher.email || '',
-        assignedClasses: classes.map((item: any) => item.className),
-        subject: '',
+        assignedClasses: classes.map((item: any) => item.displayName || item.className || item.name).filter(Boolean),
+        subject: teacher.subject || '',
         channelIdentityStatus: await getIdentityStatus(teacher.phone, 'teacher'),
         lastConversationAt: await getLastConversationAt(teacher.phone)
       };
@@ -313,6 +318,25 @@ router.post('/teachers/import', requirePermission(PERMISSIONS.TEACHERS_MANAGE), 
       const fullName = toText(getColumnValue(row, ['Teacher Name', 'Full Name', 'Name', 'fullName', 'teacher']));
       const phone = normalizePhoneNumber(toText(getColumnValue(row, ['Phone', 'Teacher Phone', 'Contact', 'phone'])));
       const email = toText(getColumnValue(row, ['Email', 'Teacher Email', 'email']));
+      const subject = toText(getColumnValue(row, [
+        'Subject',
+        'Subjects',
+        'Teaching Subject',
+        'Teaching Area',
+        'What They Teach',
+        'Teaches',
+        'subject'
+      ]));
+      const assignedClasses = splitList(getColumnValue(row, [
+        'Class',
+        'Classes',
+        'Class Name',
+        'Assigned Class',
+        'Assigned Classes',
+        'Class Assigned',
+        'Classes Assigned',
+        'className'
+      ]));
 
       if (!fullName || !phone) {
         skipped++;
@@ -321,11 +345,27 @@ router.post('/teachers/import', requirePermission(PERMISSIONS.TEACHERS_MANAGE), 
       }
 
       const existing = await Teacher.findOne({ phone });
-      await Teacher.findOneAndUpdate(
+      const teacher = await Teacher.findOneAndUpdate(
         { phone },
-        { fullName, phone, email, role: 'teacher', active: true },
+        { fullName, phone, email, subject, role: 'teacher', active: true },
         { upsert: true, new: true }
       );
+
+      for (const className of assignedClasses) {
+        await ClassModel.findOneAndUpdate(
+          { $or: [{ className }, { name: className }] },
+          {
+            schoolId: schoolFilter(req).schoolId,
+            name: className,
+            className,
+            displayName: className,
+            teacherId: teacher._id,
+            active: true
+          },
+          { upsert: true, new: true }
+        );
+      }
+
       existing ? updated++ : imported++;
     }
 
@@ -412,6 +452,7 @@ router.post('/classes/import', requirePermission(PERMISSIONS.CLASSES_MANAGE), di
       const section = toText(getColumnValue(row, ['Section', 'section']));
       const teacherName = toText(getColumnValue(row, ['Class Teacher', 'Teacher Name', 'Teacher', 'classTeacher']));
       const teacherPhone = normalizePhoneNumber(toText(getColumnValue(row, ['Teacher Phone', 'Phone', 'teacherPhone'])));
+      const teacherSubject = toText(getColumnValue(row, ['Subject', 'Subjects', 'Teaching Subject', 'Teaching Area', 'What They Teach', 'Teaches']));
 
       if (!className) {
         skipped++;
@@ -424,9 +465,13 @@ router.post('/classes/import', requirePermission(PERMISSIONS.CLASSES_MANAGE), di
         teacher = await Teacher.create({
           fullName: teacherName,
           phone: teacherPhone,
+          subject: teacherSubject,
           role: 'teacher',
           active: true
         });
+      } else if (teacher && teacherSubject) {
+        teacher.subject = teacherSubject;
+        await teacher.save();
       }
 
       const existing = await ClassModel.findOne({
