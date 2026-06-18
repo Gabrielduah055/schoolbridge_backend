@@ -6,14 +6,11 @@ import AdminUser, { type AdminRole } from '../models/AdminUser';
 import { DEFAULT_SCHOOL_ID } from '../config/school';
 import { HEADMASTER_PERMISSIONS } from '../config/permissions';
 
-const validRoles: AdminRole[] = ['super_admin', 'headmaster', 'school_admin', 'teacher'];
-
 const main = async () => {
   const name = process.env.SEED_ADMIN_NAME?.trim() || 'Headmaster';
   const email = process.env.SEED_ADMIN_EMAIL?.trim().toLowerCase();
   const password = process.env.SEED_ADMIN_PASSWORD || '';
-  const requestedRole = (process.env.SEED_ADMIN_ROLE?.trim() || 'headmaster') as AdminRole;
-  const role = validRoles.includes(requestedRole) ? requestedRole : 'headmaster';
+  const role: AdminRole = 'headmaster';
   const schoolId = process.env.SEED_ADMIN_SCHOOL_ID?.trim() || DEFAULT_SCHOOL_ID;
 
   if (!email || !password) {
@@ -34,7 +31,7 @@ const main = async () => {
     email,
     passwordHash,
     role,
-    permissions: role === 'headmaster' ? HEADMASTER_PERMISSIONS : HEADMASTER_PERMISSIONS,
+    permissions: HEADMASTER_PERMISSIONS,
     schoolId,
     isActive: true
   });
