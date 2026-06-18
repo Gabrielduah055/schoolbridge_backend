@@ -1,8 +1,14 @@
 import mongoose, { Schema, Document, Types } from 'mongoose';
+import { DEFAULT_SCHOOL_ID } from '../config/school';
 
 export interface IClass extends Document {
-  className: string;          // e.g. "Basic 1" — matches Students.class at query time
-  teacherId: Types.ObjectId;  // ref: Teacher
+  schoolId: string;
+  name: string;
+  className: string;
+  level: string;
+  section: string;
+  displayName: string;
+  teacherId?: Types.ObjectId;
   active: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -10,21 +16,32 @@ export interface IClass extends Document {
 
 const ClassSchema = new Schema<IClass>(
   {
-    className: {
-      type: String,
-      required: true,
-      trim: true,
-      index: true
-    },
+    schoolId: { type: String, default: DEFAULT_SCHOOL_ID, index: true },
+    name: { type: String, trim: true, index: true },
+    className: { type: String, trim: true, index: true },
+    level: { type: String, default: '', trim: true },
+    section: { type: String, default: '', trim: true },
+    displayName: { type: String, default: '', trim: true },
     teacherId: {
       type: Schema.Types.ObjectId,
       ref: 'Teacher',
-      required: true,
+      default: null,
       index: true
     },
-    active: { type: Boolean, default: true }
+    active: { type: Boolean, default: true, index: true }
   },
   { timestamps: true }
+);
+
+ClassSchema.pre('validate', function syncClassNames() {
+  if (!this.name && this.className) this.name = this.className;
+  if (!this.className && this.name) this.className = this.name;
+  if (!this.displayName) this.displayName = [this.name || this.className, this.section].filter(Boolean).join(' ');
+});
+
+ClassSchema.index(
+  { schoolId: 1, name: 1, section: 1 },
+  { unique: true, partialFilterExpression: { name: { $type: 'string' } } }
 );
 
 export default mongoose.model<IClass>('Class', ClassSchema);
