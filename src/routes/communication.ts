@@ -4,6 +4,7 @@ import { Types } from 'mongoose';
 import multer from 'multer';
 import fs from 'fs';
 import path from 'path';
+import * as XLSX from 'xlsx';
 import bot from '../bot/telegram';
 import ChannelAccount from '../models/ChannelAccount';
 import Conversation from '../models/Conversation';
@@ -28,9 +29,14 @@ import { normalizePhoneNumber } from '../utils/phone';
 
 const router = Router();
 const broadcastUploadDir = path.join('uploads', 'broadcasts');
+const directoryUploadDir = path.join('uploads', 'directory-imports');
 
 if (!fs.existsSync(broadcastUploadDir)) {
   fs.mkdirSync(broadcastUploadDir, { recursive: true });
+}
+
+if (!fs.existsSync(directoryUploadDir)) {
+  fs.mkdirSync(directoryUploadDir, { recursive: true });
 }
 
 const broadcastUpload = multer({
@@ -66,6 +72,26 @@ const broadcastUpload = multer({
   }
 });
 
+const directoryUpload = multer({
+  dest: directoryUploadDir,
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const allowedMimeTypes = [
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'application/vnd.ms-excel',
+      'text/csv',
+      'application/csv'
+    ];
+
+    if (allowedMimeTypes.includes(file.mimetype)) {
+      cb(null, true);
+      return;
+    }
+
+    cb(new Error('Directory import only supports Excel or CSV files.'));
+  }
+});
+
 const schoolFilter = (req: Request) => ({
   schoolId: req.authUser?.schoolId || req.query.schoolId?.toString() || DEFAULT_SCHOOL_ID
 });
@@ -79,6 +105,39 @@ const startOfToday = () => {
 const toObjectIdOrNull = (value: unknown) => {
   const text = value?.toString();
   return text && Types.ObjectId.isValid(text) ? new Types.ObjectId(text) : null;
+};
+
+const cleanupFile = (filePath?: string) => {
+  if (filePath && fs.existsSync(filePath)) {
+    fs.unlinkSync(filePath);
+  }
+};
+
+const normalizeColumnName = (value: string) => value.toLowerCase().replace(/[\s_-]/g, '');
+
+const getColumnValue = (row: Record<string, any>, candidates: string[]) => {
+  for (const candidate of candidates) {
+    if (row[candidate] !== undefined && row[candidate] !== null) return row[candidate];
+  }
+
+  const normalizedRow = new Map(
+    Object.entries(row).map(([key, value]) => [normalizeColumnName(key), value])
+  );
+
+  for (const candidate of candidates) {
+    const value = normalizedRow.get(normalizeColumnName(candidate));
+    if (value !== undefined && value !== null) return value;
+  }
+
+  return undefined;
+};
+
+const toText = (value: any) => value === undefined || value === null ? '' : value.toString().trim();
+
+const readSheetRows = (filePath: string) => {
+  const workbook = XLSX.readFile(filePath);
+  const sheet = workbook.Sheets[workbook.SheetNames[0]];
+  return XLSX.utils.sheet_to_json<Record<string, any>>(sheet);
 };
 
 const unique = <T>(values: T[]) => Array.from(new Set(values.filter(Boolean)));
@@ -237,6 +296,47 @@ router.get('/teachers', requirePermission(PERMISSIONS.TEACHERS_VIEW), async (_re
   }
 });
 
+router.post('/teachers/import', requirePermission(PERMISSIONS.TEACHERS_MANAGE), directoryUpload.single('file'), async (req: Request, res: Response) => {
+  try {
+    if (!req.file) {
+      res.status(400).json({ error: 'No file uploaded' });
+      return;
+    }
+
+    const rows = readSheetRows(req.file.path);
+    let imported = 0;
+    let updated = 0;
+    let skipped = 0;
+    const errors: string[] = [];
+
+    for (const [index, row] of rows.entries()) {
+      const fullName = toText(getColumnValue(row, ['Teacher Name', 'Full Name', 'Name', 'fullName', 'teacher']));
+      const phone = normalizePhoneNumber(toText(getColumnValue(row, ['Phone', 'Teacher Phone', 'Contact', 'phone'])));
+      const email = toText(getColumnValue(row, ['Email', 'Teacher Email', 'email']));
+
+      if (!fullName || !phone) {
+        skipped++;
+        errors.push(`Row ${index + 2} skipped - missing teacher name or phone`);
+        continue;
+      }
+
+      const existing = await Teacher.findOne({ phone });
+      await Teacher.findOneAndUpdate(
+        { phone },
+        { fullName, phone, email, role: 'teacher', active: true },
+        { upsert: true, new: true }
+      );
+      existing ? updated++ : imported++;
+    }
+
+    cleanupFile(req.file.path);
+    res.json({ imported, updated, skipped, total: rows.length, errors: errors.slice(0, 5) });
+  } catch (error: any) {
+    cleanupFile(req.file?.path);
+    res.status(500).json({ error: error.message || 'Failed to import teachers' });
+  }
+});
+
 router.get('/classes', requirePermission(PERMISSIONS.CLASSES_VIEW), async (req: Request, res: Response) => {
   try {
     const students = await Student.find({ status: 'active' }).lean();
@@ -290,6 +390,72 @@ router.get('/classes', requirePermission(PERMISSIONS.CLASSES_VIEW), async (req: 
     res.json(response.sort((a, b) => a.className.localeCompare(b.className)));
   } catch {
     res.status(500).json({ error: 'Failed to fetch classes' });
+  }
+});
+
+router.post('/classes/import', requirePermission(PERMISSIONS.CLASSES_MANAGE), directoryUpload.single('file'), async (req: Request, res: Response) => {
+  try {
+    if (!req.file) {
+      res.status(400).json({ error: 'No file uploaded' });
+      return;
+    }
+
+    const rows = readSheetRows(req.file.path);
+    let imported = 0;
+    let updated = 0;
+    let skipped = 0;
+    const errors: string[] = [];
+
+    for (const [index, row] of rows.entries()) {
+      const className = toText(getColumnValue(row, ['Class', 'Class Name', 'className', 'name']));
+      const level = toText(getColumnValue(row, ['Level', 'level']));
+      const section = toText(getColumnValue(row, ['Section', 'section']));
+      const teacherName = toText(getColumnValue(row, ['Class Teacher', 'Teacher Name', 'Teacher', 'classTeacher']));
+      const teacherPhone = normalizePhoneNumber(toText(getColumnValue(row, ['Teacher Phone', 'Phone', 'teacherPhone'])));
+
+      if (!className) {
+        skipped++;
+        errors.push(`Row ${index + 2} skipped - missing class name`);
+        continue;
+      }
+
+      let teacher = teacherPhone ? await Teacher.findOne({ phone: teacherPhone }) : null;
+      if (!teacher && teacherName && teacherPhone) {
+        teacher = await Teacher.create({
+          fullName: teacherName,
+          phone: teacherPhone,
+          role: 'teacher',
+          active: true
+        });
+      }
+
+      const existing = await ClassModel.findOne({
+        $or: [{ className }, { name: className }]
+      });
+
+      await ClassModel.findOneAndUpdate(
+        { $or: [{ className }, { name: className }] },
+        {
+          schoolId: schoolFilter(req).schoolId,
+          name: className,
+          className,
+          displayName: section ? `${className} ${section}` : className,
+          level,
+          section,
+          ...(teacher ? { teacherId: teacher._id } : {}),
+          active: true
+        },
+        { upsert: true, new: true }
+      );
+
+      existing ? updated++ : imported++;
+    }
+
+    cleanupFile(req.file.path);
+    res.json({ imported, updated, skipped, total: rows.length, errors: errors.slice(0, 5) });
+  } catch (error: any) {
+    cleanupFile(req.file?.path);
+    res.status(500).json({ error: error.message || 'Failed to import classes' });
   }
 });
 

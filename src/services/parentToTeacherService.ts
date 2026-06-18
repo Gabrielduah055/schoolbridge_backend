@@ -2,7 +2,6 @@ import TelegramBot from 'node-telegram-bot-api';
 import { Types } from 'mongoose';
 import Student, { type IStudent } from '../models/Students';
 import Class from '../models/Class';
-import StudentEnrollment from '../models/StudentEnrollment';
 import Teacher from '../models/Teacher';
 import TelegramIdentity from '../models/TelegramIdentity';
 import Message from '../models/Message';
@@ -10,8 +9,6 @@ import { getPhoneLookupCandidates } from '../utils/phone';
 import { chatWithSchoolAgent } from '../agents/schoolAgent';
 import { DEFAULT_SCHOOL_ID } from '../config/school';
 import { logDelivery } from './communication/deliveryService';
-import { getActiveAcademicYear } from './academic/academicYearService';
-import { getClassTeacher } from './academic/teacherAssignmentService';
 import logger from '../utils/logger';
 
 // ─── Intent detection ─────────────────────────────────────────────────────────
@@ -91,26 +88,6 @@ export const findChildrenByParentPhone = async (
   }));
 };
 
-const enrichChildrenWithCurrentEnrollment = async (children: ChildChoice[]): Promise<ChildChoice[]> => {
-  const activeYear = await getActiveAcademicYear();
-  if (!activeYear) return children;
-
-  const enriched: ChildChoice[] = [];
-  for (const child of children) {
-    const enrollment = await StudentEnrollment.findOne({
-      academicYearId: activeYear._id,
-      studentId: child.studentId,
-      status: 'active'
-    }).populate('classId').lean();
-    const classRecord = (enrollment as any)?.classId;
-    enriched.push({
-      ...child,
-      className: classRecord?.name || classRecord?.className || child.className
-    });
-  }
-  return enriched;
-};
-
 // ─── Teacher resolver ─────────────────────────────────────────────────────────
 
 interface TeacherTarget {
@@ -139,11 +116,7 @@ export const resolveTeacherForClass = async (
   if (!classRecord) return { ok: false, reason: 'no_class' };
 
   // Step 2 — Find the active teacher
-  const activeYear = await getActiveAcademicYear();
-  const assignment = activeYear
-    ? await getClassTeacher(classRecord._id as Types.ObjectId, activeYear._id as Types.ObjectId)
-    : null;
-  const teacher = (assignment as any)?.teacherId || await Teacher.findById(classRecord.teacherId);
+  const teacher = await Teacher.findById(classRecord.teacherId);
   if (!teacher || !teacher.active) return { ok: false, reason: 'no_teacher' };
 
   // Step 3 — Find teacher's Telegram identity
@@ -351,7 +324,7 @@ export const handleParentToTeacherIfIntended = async (
   }
 
   // ── C. Find parent's children ─────────────────────────────────────────────
-  const children = await enrichChildrenWithCurrentEnrollment(await findChildrenByParentPhone(parentPhone));
+  const children = await findChildrenByParentPhone(parentPhone);
 
   if (children.length === 0) {
     await bot.sendMessage(

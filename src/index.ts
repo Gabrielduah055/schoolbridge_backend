@@ -17,7 +17,6 @@ import knowledgeRoutes from './routes/knowledge';
 import chatRoutes from './routes/chat';
 import studentRoutes from './routes/students';
 import communicationRoutes from './routes/communication';
-import academicRoutes from './routes/academic';
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -62,7 +61,6 @@ const main = async () => {
   // /api/bot/webhook without dashboard JWT middleware blocking it.
   app.use('/api/students', authenticateUser, requirePermission(PERMISSIONS.STUDENTS_VIEW), studentRoutes);
   app.use('/api/knowledge', authenticateUser, knowledgeRoutes);
-  app.use('/api', authenticateUser, academicRoutes);
   app.use('/api', authenticateUser, communicationRoutes);
 
   // 3. Start the cron worker — fires every minute to send scheduled notifications

@@ -5,7 +5,6 @@ import Message from '../../models/Message';
 import MessageRecipient from '../../models/MessageRecipient';
 import Class from '../../models/Class';
 import Student from '../../models/Students';
-import StudentEnrollment from '../../models/StudentEnrollment';
 import Teacher from '../../models/Teacher';
 import TelegramIdentity from '../../models/TelegramIdentity';
 import { chatWithSchoolAgent } from '../../agents/schoolAgent';
@@ -13,7 +12,6 @@ import { DEFAULT_SCHOOL_ID } from '../../config/school';
 import { normalizePhoneNumber } from '../../utils/phone';
 import { logDelivery } from './deliveryService';
 import { findParentTelegramIdentityByPhone } from '../telegramIdentityReconciliationService';
-import { getActiveAcademicYear } from '../academic/academicYearService';
 import type { AdminRole } from '../../models/AdminUser';
 
 type BroadcastAudience = 'whole_school' | 'class' | 'individual' | 'individual_parent' | 'teachers' | 'parents';
@@ -180,39 +178,11 @@ const parentRecipientsFromStudents = async (filter: Record<string, unknown>) => 
   ));
 };
 
-const parentRecipientsFromActiveEnrollmentClass = async (className: string, schoolId = DEFAULT_SCHOOL_ID) => {
-  const activeYear = await getActiveAcademicYear(schoolId);
-  if (!activeYear) return [];
-
-  const classRecord = await Class.findOne({
-    schoolId,
-    active: true,
-    $or: [{ _id: Types.ObjectId.isValid(className) ? new Types.ObjectId(className) : undefined }, { name: className }, { className }]
-  });
-  if (!classRecord) return [];
-
-  const enrollments = await StudentEnrollment.find({
-    schoolId,
-    academicYearId: activeYear._id,
-    classId: classRecord._id,
-    status: 'active'
-  }).populate('studentId').lean();
-
-  return uniqueByPhone(enrollments.flatMap((enrollment: any) => {
-    const student = enrollment.studentId;
-    if (!student) return [];
-    return [student.parentPhone, student.parentPhone2]
-      .filter(Boolean)
-      .map((phone) => ({
-        name: student.parentName || 'Parent',
-        phone,
-        role: 'parent' as const,
-        studentId: student._id,
-        studentName: student.name || '',
-        classId: classRecord._id,
-        targetClass: classRecord.name || classRecord.className
-      }));
-  }));
+const resolveClassName = async (classRef: string) => {
+  if (!classRef) return '';
+  if (!Types.ObjectId.isValid(classRef)) return classRef;
+  const classRecord = await Class.findById(classRef).lean();
+  return classRecord?.className || classRecord?.name || classRef;
 };
 
 const teacherRecipients = async () => {
@@ -232,12 +202,9 @@ export const resolveRecipients = async (broadcast: {
   recipientPhone?: string;
 }): Promise<RecipientCandidate[]> => {
   if (broadcast.audienceType === 'class') {
-    const targetClass = broadcast.targetClass || broadcast.classId?.toString();
+    const targetClass = await resolveClassName(broadcast.targetClass || broadcast.classId?.toString() || '');
     if (!targetClass) return [];
-    const enrollmentRecipients = await parentRecipientsFromActiveEnrollmentClass(targetClass);
-    return enrollmentRecipients.length > 0
-      ? enrollmentRecipients
-      : parentRecipientsFromStudents({ class: targetClass });
+    return parentRecipientsFromStudents({ class: targetClass });
   }
 
   if (broadcast.audienceType === 'parents') {
@@ -260,22 +227,7 @@ export const resolveRecipients = async (broadcast: {
 
       if (!student) return [];
 
-      const activeYear = await getActiveAcademicYear(DEFAULT_SCHOOL_ID);
-      const enrollment = activeYear
-        ? await StudentEnrollment.findOne({
-            schoolId: DEFAULT_SCHOOL_ID,
-            academicYearId: activeYear._id,
-            studentId: student._id,
-            status: 'active'
-          }).populate('classId').lean()
-        : null;
-      const classRecord = (enrollment as any)?.classId;
-      const recipients = await parentRecipientsFromStudents({ _id: student._id });
-      return recipients.map((recipient) => ({
-        ...recipient,
-        classId: classRecord?._id || recipient.classId,
-        targetClass: classRecord?.name || classRecord?.className || recipient.targetClass
-      }));
+      return parentRecipientsFromStudents({ _id: student._id });
     }
 
     if (!broadcast.recipientPhone) return [];

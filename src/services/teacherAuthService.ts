@@ -2,8 +2,6 @@ import TelegramIdentity from '../models/TelegramIdentity';
 import Teacher, { type ITeacher } from '../models/Teacher';
 import Class, { type IClass } from '../models/Class';
 import Student, { type IStudent } from '../models/Students';
-import { getActiveAcademicYear } from './academic/academicYearService';
-import { getTeacherCommunicationScope } from './academic/teacherAssignmentService';
 
 export type TeacherContext = {
   teacher: ITeacher;
@@ -23,21 +21,6 @@ export const getTeacherContext = async (
 
   const teacher = await Teacher.findById(identity.teacherId);
   if (!teacher || !teacher.active) return null;
-
-  const activeYear = await getActiveAcademicYear();
-  if (activeYear) {
-    const scope = await getTeacherCommunicationScope(teacher._id.toString());
-    const assignment = [...scope.classTeacherClasses, ...scope.subjectTeacherClasses][0] as any;
-    const assignedClass = assignment?.classId;
-
-    if (assignedClass) {
-      return {
-        teacher,
-        assignedClass,
-        className: assignedClass.name || assignedClass.className
-      };
-    }
-  }
 
   const assignedClass = await Class.findOne({
     teacherId: teacher._id,
