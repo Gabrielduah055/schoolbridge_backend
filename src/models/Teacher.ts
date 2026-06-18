@@ -4,6 +4,7 @@ export interface ITeacher extends Document {
   fullName: string;
   phone: string;        // normalized to 0XXXXXXXXX format
   email?: string;
+  subject?: string;
   role: 'teacher';
   active: boolean;
   createdAt: Date;
@@ -21,6 +22,7 @@ const TeacherSchema = new Schema<ITeacher>(
       index: true
     },
     email: { type: String, default: '', trim: true },
+    subject: { type: String, default: '', trim: true },
     role: { type: String, enum: ['teacher'], default: 'teacher' },
     active: { type: Boolean, default: true, index: true }
   },
