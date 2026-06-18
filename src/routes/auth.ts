@@ -45,6 +45,11 @@ router.post('/login', async (req: Request, res: Response) => {
       return;
     }
 
+    if (user.role !== 'headmaster') {
+      res.status(403).json({ error: 'Dashboard access is only available to the registered headmaster admin.' });
+      return;
+    }
+
     user.lastLoginAt = new Date();
     await user.save();
 

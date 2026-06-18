@@ -84,6 +84,11 @@ export const authenticateUser = async (req: Request, res: Response, next: NextFu
       return;
     }
 
+    if (user.role !== 'headmaster') {
+      res.status(403).json({ error: 'Forbidden. Dashboard access is only available to the registered headmaster admin.' });
+      return;
+    }
+
     req.authUser = {
       id: user._id.toString(),
       name: user.name,
@@ -103,6 +108,11 @@ export const requirePermission = (permission: Permission) =>
   (req: Request, res: Response, next: NextFunction): void => {
     if (!req.authUser) {
       res.status(401).json({ error: 'Unauthorized. Login required.' });
+      return;
+    }
+
+    if (req.authUser.role === 'headmaster') {
+      next();
       return;
     }
 

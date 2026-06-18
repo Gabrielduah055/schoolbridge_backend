@@ -2,7 +2,7 @@ import mongoose, { Schema, Document } from 'mongoose';
 import { DEFAULT_SCHOOL_ID } from '../config/school';
 import type { Permission } from '../config/permissions';
 
-export type AdminRole = 'super_admin' | 'headmaster' | 'school_admin' | 'teacher';
+export type AdminRole = 'headmaster';
 
 export interface IAdminUser extends Document {
   name: string;
@@ -24,7 +24,7 @@ const AdminUserSchema = new Schema<IAdminUser>(
     passwordHash: { type: String, required: true },
     role: {
       type: String,
-      enum: ['super_admin', 'headmaster', 'school_admin', 'teacher'],
+      enum: ['headmaster'],
       default: 'headmaster',
       index: true
     },
