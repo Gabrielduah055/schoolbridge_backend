@@ -17,7 +17,7 @@ import Student from '../models/Students';
 import Teacher from '../models/Teacher';
 import ClassModel from '../models/Class';
 import TelegramIdentity from '../models/TelegramIdentity';
-import { cleanBroadcastText, createDraft, sendApprovedBroadcast } from '../services/communication/broadcastService';
+import { cleanBroadcastText, createDraft, previewRecipients, sendApprovedBroadcast } from '../services/communication/broadcastService';
 import { recordOutgoingMessage } from '../services/communication/messageService';
 import { logDelivery } from '../services/communication/deliveryService';
 import { createTicket } from '../services/communication/handoverService';
@@ -82,7 +82,14 @@ const toObjectIdOrNull = (value: unknown) => {
 };
 
 const unique = <T>(values: T[]) => Array.from(new Set(values.filter(Boolean)));
-const SENT_BROADCAST_STATUSES = ['sent', 'partial', 'partially_failed'] as const;
+const SENT_BROADCAST_STATUSES = ['sent', 'partially_failed'] as const;
+
+const authObjectId = (req: Request) =>
+  req.authUser?.id && Types.ObjectId.isValid(req.authUser.id)
+    ? new Types.ObjectId(req.authUser.id)
+    : undefined;
+
+const authName = (req: Request) => req.authUser?.name || 'Dashboard User';
 
 const parseTelegramChannels = (value: unknown): Array<'telegram'> => {
   const channels = Array.isArray(value)
@@ -371,8 +378,6 @@ router.get('/conversations', requirePermission(PERMISSIONS.CONVERSATIONS_VIEW), 
 router.post('/conversations/:id/reply', requirePermission(PERMISSIONS.CONVERSATIONS_REPLY), async (req: Request, res: Response) => {
   try {
     const body = req.body.body?.toString().trim();
-    const senderName = req.body.senderName?.toString().trim() || req.authUser?.name || 'Admin';
-    const senderRole = req.body.senderRole === 'admin' ? 'admin' : 'admin';
 
     if (!body) {
       res.status(400).json({ error: 'Reply body is required' });
@@ -394,8 +399,9 @@ router.post('/conversations/:id/reply', requirePermission(PERMISSIONS.CONVERSATI
       schoolId: conversation.schoolId,
       channel: 'telegram',
       conversationId: conversation._id as Types.ObjectId,
-      senderName,
-      senderRole,
+      senderUserId: authObjectId(req),
+      senderName: authName(req),
+      senderRole: req.authUser?.role || 'admin',
       body,
       aiGenerated: false,
       status: 'queued'
@@ -500,7 +506,15 @@ router.post('/conversations/:id/resolve', requirePermission(PERMISSIONS.CONVERSA
 
     await HandoverTicket.updateMany(
       { conversationId: conversation._id, status: { $in: ['open', 'assigned'] } },
-      { $set: { status: 'resolved', resolvedAt: new Date() } }
+      {
+        $set: {
+          status: 'resolved',
+          resolvedAt: new Date(),
+          resolvedBy: authObjectId(req),
+          resolvedByName: authName(req),
+          resolvedByRole: req.authUser?.role || ''
+        }
+      }
     );
     res.json(conversation);
   } catch {
@@ -601,10 +615,10 @@ router.post('/handover-tickets/:id/assign', requirePermission(PERMISSIONS.HANDOV
     }
 
     ticket.assignedTo = assignedTo;
-    if (req.authUser?.id && Types.ObjectId.isValid(req.authUser.id)) {
-      ticket.assignedBy = new Types.ObjectId(req.authUser.id);
-    }
-    ticket.assignedByName = req.authUser?.name || 'Admin';
+    ticket.assignedBy = authObjectId(req);
+    ticket.assignedByName = authName(req);
+    ticket.assignedByRole = req.authUser?.role || '';
+    ticket.assignedAt = new Date();
     if (ticket.status !== 'resolved') ticket.status = 'assigned';
     await ticket.save();
 
@@ -622,7 +636,6 @@ router.post('/handover-tickets/:id/assign', requirePermission(PERMISSIONS.HANDOV
 router.post('/handover-tickets/:id/note', requirePermission(PERMISSIONS.HANDOVERS_ASSIGN), async (req: Request, res: Response) => {
   try {
     const note = req.body.note?.toString().trim();
-    const createdBy = req.body.createdBy?.toString().trim() || req.authUser?.name || 'Admin';
     if (!note) {
       res.status(400).json({ error: 'note is required' });
       return;
@@ -631,7 +644,15 @@ router.post('/handover-tickets/:id/note', requirePermission(PERMISSIONS.HANDOVER
     const ticket = await HandoverTicket.findByIdAndUpdate(
       req.params.id,
       {
-        $push: { notes: { text: note, createdBy, createdAt: new Date() } },
+        $push: {
+          notes: {
+            text: note,
+            createdBy: authObjectId(req),
+            createdByName: authName(req),
+            createdByRole: req.authUser?.role || '',
+            createdAt: new Date()
+          }
+        },
         $set: { internalNotes: note }
       },
       { new: true }
@@ -655,8 +676,9 @@ router.post('/handover-tickets/:id/resolve', requirePermission(PERMISSIONS.HANDO
       {
         status: 'resolved',
         resolvedAt: new Date(),
-        ...(req.authUser?.id && Types.ObjectId.isValid(req.authUser.id) ? { resolvedBy: new Types.ObjectId(req.authUser.id) } : {}),
-        resolvedByName: req.authUser?.name || 'Admin',
+        resolvedBy: authObjectId(req),
+        resolvedByName: authName(req),
+        resolvedByRole: req.authUser?.role || '',
         internalNotes: req.body.internalNotes ?? undefined
       },
       { new: true }
@@ -718,8 +740,8 @@ router.get('/broadcasts/metrics', requirePermission(PERMISSIONS.BROADCASTS_VIEW)
         sentAt: { $gte: today }
       }),
       Broadcast.countDocuments({ schoolId, status: 'draft' }),
-      Broadcast.countDocuments({ schoolId, approvalStatus: 'pending_approval' }),
-      Broadcast.countDocuments({ schoolId, approvalStatus: 'approved', status: { $in: ['draft', 'scheduled'] } }),
+      Broadcast.countDocuments({ schoolId, status: 'pending_approval' }),
+      Broadcast.countDocuments({ schoolId, status: 'approved' }),
       Broadcast.countDocuments({ schoolId, status: 'failed' }),
       MessageRecipient.countDocuments({ status: 'sent' }),
       MessageRecipient.countDocuments({ status: 'failed' }),
@@ -747,9 +769,9 @@ router.get('/broadcasts/metrics', requirePermission(PERMISSIONS.BROADCASTS_VIEW)
 
 router.post('/broadcasts/draft', requirePermission(PERMISSIONS.BROADCASTS_CREATE), broadcastUpload.single('attachment'), async (req: Request, res: Response) => {
   try {
-    const { createdByRole, audienceType, originalText } = req.body;
-    if (!createdByRole || !audienceType || !originalText) {
-      res.status(400).json({ error: 'createdByRole, audienceType, and originalText are required' });
+    const { audienceType, originalText } = req.body;
+    if (!audienceType || !originalText) {
+      res.status(400).json({ error: 'audienceType and originalText are required' });
         return;
     }
 
@@ -766,9 +788,10 @@ router.post('/broadcasts/draft', requirePermission(PERMISSIONS.BROADCASTS_CREATE
       : [];
 
     const broadcast = await createDraft({
-      schoolId: req.body.schoolId || DEFAULT_SCHOOL_ID,
-      createdByRole,
-      createdBy: req.authUser?.id && Types.ObjectId.isValid(req.authUser.id) ? new Types.ObjectId(req.authUser.id) : undefined,
+      schoolId: req.authUser?.schoolId || DEFAULT_SCHOOL_ID,
+      createdByRole: req.authUser?.role || 'admin',
+      createdByName: authName(req),
+      createdBy: authObjectId(req),
       audienceType,
       classId: classObjectId ?? undefined,
       recipientStudentId: recipientStudentId ?? undefined,
@@ -793,15 +816,27 @@ router.post('/broadcasts/draft', requirePermission(PERMISSIONS.BROADCASTS_CREATE
 
 router.post('/broadcasts/:id/approve', requirePermission(PERMISSIONS.BROADCASTS_APPROVE), async (req: Request, res: Response) => {
   try {
+    const draftedText = req.body.draftedText?.toString();
+    const setFields: Record<string, unknown> = {
+      status: 'approved',
+      approvalStatus: 'approved',
+      approvedAt: new Date(),
+      approvedBy: authObjectId(req),
+      approvedByName: authName(req),
+      approvedByRole: req.authUser?.role || ''
+    };
+
+    if (draftedText?.trim()) {
+      setFields.draftedText = cleanBroadcastText(draftedText);
+      setFields.lastEditedBy = authObjectId(req);
+      setFields.lastEditedByName = authName(req);
+      setFields.lastEditedByRole = req.authUser?.role || '';
+      setFields.lastEditedAt = new Date();
+    }
+
     const broadcast = await Broadcast.findByIdAndUpdate(
       req.params.id,
-      {
-        approvalStatus: 'approved',
-        approvedAt: new Date(),
-        ...(req.authUser?.id && Types.ObjectId.isValid(req.authUser.id) ? { approvedBy: new Types.ObjectId(req.authUser.id) } : {}),
-        approvedByName: req.authUser?.name || 'Admin',
-        ...(req.body.draftedText ? { draftedText: cleanBroadcastText(req.body.draftedText.toString()) } : {})
-      },
+      { $set: setFields },
       { new: true }
     );
     if (!broadcast) {
@@ -817,11 +852,33 @@ router.post('/broadcasts/:id/approve', requirePermission(PERMISSIONS.BROADCASTS_
 router.post('/broadcasts/:id/send', requirePermission(PERMISSIONS.BROADCASTS_SEND), async (req: Request, res: Response) => {
   try {
     const result = await sendApprovedBroadcast(req.params.id.toString(), req.authUser
-      ? { id: req.authUser.id, name: req.authUser.name }
+      ? { id: req.authUser.id, name: req.authUser.name, role: req.authUser.role }
       : undefined);
     res.json(result);
   } catch (error: any) {
     res.status(400).json({ error: error.message || 'Failed to send broadcast' });
+  }
+});
+
+router.post('/broadcasts/preview-recipients', requirePermission(PERMISSIONS.BROADCASTS_VIEW), async (req: Request, res: Response) => {
+  try {
+    const audienceType = req.body.audienceType?.toString();
+    if (!audienceType) {
+      res.status(400).json({ error: 'audienceType is required' });
+      return;
+    }
+
+    const preview = await previewRecipients({
+      audienceType,
+      targetClass: req.body.targetClass?.toString() || req.body.classId?.toString() || '',
+      classId: req.body.classId?.toString() || '',
+      recipientStudentId: req.body.recipientStudentId?.toString() || '',
+      recipientPhone: req.body.recipientPhone?.toString() || ''
+    });
+
+    res.json(preview);
+  } catch (error: any) {
+    res.status(400).json({ error: error.message || 'Failed to preview recipients' });
   }
 });
 

@@ -1,5 +1,6 @@
 import mongoose, { Schema, Document, Types } from 'mongoose';
 import { DEFAULT_SCHOOL_ID } from '../config/school';
+import type { AdminRole } from './AdminUser';
 
 export type MessageStatus =
   | 'received'
@@ -15,7 +16,8 @@ export interface IMessage extends Document {
   schoolId: string;
   channel: 'telegram' | 'whatsapp' | 'dashboard';
   direction: 'incoming' | 'outgoing';
-  senderRole: 'parent' | 'teacher' | 'admin' | 'assistant' | 'system' | 'visitor' | 'unregistered';
+  senderRole: 'parent' | 'teacher' | 'admin' | AdminRole | 'assistant' | 'system' | 'visitor' | 'unregistered';
+  senderUserId?: Types.ObjectId;
   senderName: string;
   body: string;
   messageType: 'text' | 'image' | 'file' | 'audio' | 'system';
@@ -49,10 +51,11 @@ const MessageSchema = new Schema<IMessage>(
     direction: { type: String, enum: ['incoming', 'outgoing'], default: 'outgoing', index: true },
     senderRole: {
       type: String,
-      enum: ['parent', 'teacher', 'admin', 'assistant', 'system', 'visitor', 'unregistered'],
+      enum: ['parent', 'teacher', 'admin', 'super_admin', 'headmaster', 'school_admin', 'assistant', 'system', 'visitor', 'unregistered'],
       default: 'system',
       index: true
     },
+    senderUserId: { type: Schema.Types.ObjectId, ref: 'AdminUser', default: null, index: true },
     senderName: { type: String, default: '' },
     body: { type: String, default: '' },
     messageType: {
