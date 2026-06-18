@@ -3,6 +3,7 @@ import Message from '../../models/Message';
 import Conversation from '../../models/Conversation';
 import { DEFAULT_SCHOOL_ID } from '../../config/school';
 import type { NormalizedInboundMessage, ResolvedSender } from './types';
+import type { AdminRole } from '../../models/AdminUser';
 
 interface RecordIncomingArgs {
   inbound: NormalizedInboundMessage;
@@ -14,8 +15,9 @@ interface RecordOutgoingArgs {
   schoolId?: string;
   channel: 'telegram' | 'whatsapp' | 'dashboard';
   conversationId: Types.ObjectId;
+  senderUserId?: Types.ObjectId;
   senderName?: string;
-  senderRole?: 'admin' | 'assistant' | 'system' | 'teacher';
+  senderRole?: 'admin' | 'assistant' | 'system' | 'teacher' | AdminRole;
   body: string;
   providerMessageId?: string;
   aiGenerated?: boolean;
@@ -57,6 +59,7 @@ export const recordOutgoingMessage = async ({
   schoolId,
   channel,
   conversationId,
+  senderUserId,
   senderName = 'SchoolBridge Bot',
   senderRole,
   body,
@@ -64,20 +67,23 @@ export const recordOutgoingMessage = async ({
   aiGenerated = false,
   status = 'queued'
 }: RecordOutgoingArgs) => {
-  const message = await Message.create({
+  const messagePayload = {
     conversationId,
     schoolId: schoolId || DEFAULT_SCHOOL_ID,
     channel,
-    direction: 'outgoing',
+    direction: 'outgoing' as const,
     senderRole: senderRole || (aiGenerated ? 'assistant' : 'system'),
     senderName,
     body,
-    messageType: 'text',
+    messageType: 'text' as const,
     providerMessageId,
     aiGenerated,
     status,
-    sentAt: new Date()
-  });
+    sentAt: new Date(),
+    ...(senderUserId ? { senderUserId } : {})
+  };
+
+  const message = await Message.create(messagePayload);
 
   await touchConversation(conversationId);
   return message;

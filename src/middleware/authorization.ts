@@ -1,8 +1,7 @@
 import type { Request, Response, NextFunction } from 'express';
 import AdminUser, { type AdminRole } from '../models/AdminUser';
-import { HEADMASTER_PERMISSIONS, type Permission } from '../config/permissions';
+import { type Permission } from '../config/permissions';
 import { verifyAuthToken } from '../services/authTokenService';
-import { DEFAULT_SCHOOL_ID } from '../config/school';
 import logger from '../utils/logger';
 
 export interface AuthenticatedDashboardUser {
@@ -70,33 +69,11 @@ const getBearerToken = (req: Request) => {
     : '';
 };
 
-const tryDeprecatedApiKeyFallback = (req: Request): boolean => {
-  const apiKey = process.env.ADMIN_API_KEY?.trim();
-  const token = getBearerToken(req);
-  if (!apiKey || !token || token !== apiKey) return false;
-
-  // TODO: Remove ADMIN_API_KEY fallback after dashboard login is stable.
-  req.authUser = {
-    id: 'legacy-admin-api-key',
-    name: 'Legacy Admin',
-    email: 'legacy-admin@schoolbridge.local',
-    role: 'headmaster',
-    permissions: HEADMASTER_PERMISSIONS,
-    schoolId: DEFAULT_SCHOOL_ID
-  };
-  return true;
-};
-
 export const authenticateUser = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const token = getBearerToken(req);
     if (!token) {
       res.status(401).json({ error: 'Unauthorized. Login required.' });
-      return;
-    }
-
-    if (tryDeprecatedApiKeyFallback(req)) {
-      next();
       return;
     }
 

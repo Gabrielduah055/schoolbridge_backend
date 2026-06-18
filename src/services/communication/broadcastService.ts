@@ -11,13 +11,15 @@ import { DEFAULT_SCHOOL_ID } from '../../config/school';
 import { normalizePhoneNumber } from '../../utils/phone';
 import { logDelivery } from './deliveryService';
 import { findParentTelegramIdentityByPhone } from '../telegramIdentityReconciliationService';
+import type { AdminRole } from '../../models/AdminUser';
 
 type BroadcastAudience = 'whole_school' | 'class' | 'individual' | 'individual_parent' | 'teachers' | 'parents';
 
 interface CreateDraftArgs {
   schoolId?: string;
   createdBy?: Types.ObjectId;
-  createdByRole: 'teacher' | 'admin';
+  createdByName?: string;
+  createdByRole: AdminRole | 'teacher' | 'admin';
   audienceType: BroadcastAudience;
   classId?: Types.ObjectId;
   recipientStudentId?: Types.ObjectId;
@@ -51,6 +53,31 @@ interface RecipientCandidate {
 interface BroadcastActor {
   id: string;
   name: string;
+  role: AdminRole;
+}
+
+export interface RecipientPreviewItem {
+  name: string;
+  role: 'parent' | 'teacher';
+  phone: string;
+  studentName: string;
+  className: string;
+  telegramLinked: boolean;
+  telegramChatId: string | null;
+  canReceiveNow: boolean;
+  reasonIfNotReachable: string | null;
+}
+
+export interface RecipientPreview {
+  audienceType: BroadcastAudience;
+  totalContacts: number;
+  telegramReachable: number;
+  telegramMissing: number;
+  whatsappReachable: 0;
+  whatsappMissing: 0;
+  reachableNow: number;
+  unreachableNow: number;
+  recipients: RecipientPreviewItem[];
 }
 
 export const cleanBroadcastText = (value: string) => {
@@ -67,6 +94,7 @@ export const cleanBroadcastText = (value: string) => {
 export const createDraft = async ({
   schoolId = DEFAULT_SCHOOL_ID,
   createdBy,
+  createdByName = '',
   createdByRole,
   audienceType,
   classId,
@@ -104,6 +132,7 @@ export const createDraft = async ({
   return Broadcast.create({
     schoolId,
     createdBy,
+    createdByName,
     createdByRole,
     audienceType,
     classId,
@@ -116,7 +145,7 @@ export const createDraft = async ({
     draftedText: finalDraft,
     attachments,
     approvalStatus: 'pending_approval',
-    status: 'draft',
+    status: 'pending_approval',
     channels: channels.filter((channel) => channel === 'telegram')
   });
 };
@@ -142,6 +171,7 @@ const parentRecipientsFromStudents = async (filter: Record<string, unknown>) => 
         phone,
         role: 'parent' as const,
         studentId: student._id,
+        studentName: student.name || '',
         targetClass: student.class
       }))
   ));
@@ -156,7 +186,12 @@ const teacherRecipients = async () => {
   })));
 };
 
-const resolveRecipients = async (broadcast: any): Promise<RecipientCandidate[]> => {
+export const resolveRecipients = async (broadcast: {
+  audienceType: BroadcastAudience;
+  targetClass?: string;
+  recipientStudentId?: Types.ObjectId | string | null;
+  recipientPhone?: string;
+}): Promise<RecipientCandidate[]> => {
   if (broadcast.audienceType === 'class') {
     const targetClass = broadcast.targetClass;
     if (!targetClass) return [];
@@ -216,6 +251,7 @@ export const sendApprovedBroadcast = async (broadcastId: string, actor?: Broadca
   await broadcast.save();
 
   const body = cleanBroadcastText(broadcast.draftedText || broadcast.originalText);
+  // TODO: Move broadcast attachments to durable cloud storage before production pilot.
   const attachments = (broadcast.attachments || []) as BroadcastAttachment[];
   const recipients = await resolveRecipients(broadcast);
   let sentCount = 0;
@@ -332,12 +368,15 @@ export const sendApprovedBroadcast = async (broadcastId: string, actor?: Broadca
   if (actor && Types.ObjectId.isValid(actor.id)) {
     broadcast.sentBy = new Types.ObjectId(actor.id);
     broadcast.sentByName = actor.name;
+    broadcast.sentByRole = actor.role;
   }
-  broadcast.status = totalRecipients === 0 || sentCount === 0
-    ? 'failed'
-    : failedCount > 0 || pendingCount > 0
-      ? 'partially_failed'
-      : 'sent';
+  const unsuccessfulCount = failedCount + pendingCount;
+  broadcast.status =
+    totalRecipients === 0 || sentCount === 0
+      ? 'failed'
+      : unsuccessfulCount > 0
+        ? 'partially_failed'
+        : 'sent';
   await broadcast.save();
 
   return {
@@ -348,5 +387,60 @@ export const sendApprovedBroadcast = async (broadcastId: string, actor?: Broadca
       failedCount,
       pendingCount
     }
+  };
+};
+
+export const previewRecipients = async (
+  input: {
+    audienceType: BroadcastAudience;
+    targetClass?: string;
+    classId?: string;
+    recipientStudentId?: string;
+    recipientPhone?: string;
+  }
+): Promise<RecipientPreview> => {
+  const recipients = await resolveRecipients({
+    audienceType: input.audienceType,
+    targetClass: input.targetClass || input.classId || '',
+    recipientStudentId: input.recipientStudentId,
+    recipientPhone: input.recipientPhone
+  });
+
+  const previewItems: RecipientPreviewItem[] = [];
+
+  for (const recipient of recipients) {
+    const identity = recipient.role === 'parent'
+      ? await findParentTelegramIdentityByPhone(recipient.phone)
+      : await TelegramIdentity.findOne({
+          phone: normalizePhoneNumber(recipient.phone),
+          status: recipient.role
+        });
+
+    previewItems.push({
+      name: recipient.name,
+      role: recipient.role,
+      phone: normalizePhoneNumber(recipient.phone),
+      studentName: (recipient as any).studentName || '',
+      className: recipient.targetClass || '',
+      telegramLinked: Boolean(identity?.chatId),
+      telegramChatId: identity?.chatId || null,
+      canReceiveNow: Boolean(identity?.chatId),
+      reasonIfNotReachable: identity?.chatId ? null : 'Not connected to the school Telegram bot'
+    });
+  }
+
+  const telegramReachable = previewItems.filter((recipient) => recipient.telegramLinked).length;
+  const telegramMissing = previewItems.length - telegramReachable;
+
+  return {
+    audienceType: input.audienceType,
+    totalContacts: previewItems.length,
+    telegramReachable,
+    telegramMissing,
+    whatsappReachable: 0,
+    whatsappMissing: 0,
+    reachableNow: telegramReachable,
+    unreachableNow: telegramMissing,
+    recipients: previewItems
   };
 };

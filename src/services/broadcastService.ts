@@ -273,6 +273,12 @@ export const logBroadcast = async (
       : failed.length === 0
         ? 'sent'
         : 'partial';
+  const broadcastStatus =
+    total === 0
+      ? 'failed'
+      : failed.length === 0
+        ? 'sent'
+        : 'partially_failed';
 
   const message = await Message.create({
     schoolId: DEFAULT_SCHOOL_ID,
@@ -297,6 +303,7 @@ export const logBroadcast = async (
   const broadcast = await Broadcast.create({
     schoolId: DEFAULT_SCHOOL_ID,
     createdBy: ctx.teacher._id,
+    createdByName: ctx.teacher.fullName,
     createdByRole: 'teacher',
     audienceType: 'class',
     classId: ctx.assignedClass._id,
@@ -304,7 +311,7 @@ export const logBroadcast = async (
     originalText: extractedMessage,
     draftedText: extractedMessage,
     approvalStatus: 'approved',
-    status,
+    status: broadcastStatus,
     channels: ['telegram'],
     sentAt: new Date()
   });
