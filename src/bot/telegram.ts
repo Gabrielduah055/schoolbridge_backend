@@ -26,6 +26,7 @@ import {
 } from '../services/teacherAuthService';
 import { handleBroadcastIfIntended } from '../services/broadcastService';
 import { handleStudentMessageIfIntended } from '../services/studentMessageService';
+import { handleTeacherStudentListIfIntended } from '../services/teacherStudentListService';
 import { handleScheduledIfIntended } from '../services/scheduledNotificationService';
 import { handleParentToTeacherIfIntended } from '../services/parentToTeacherService';
 import { reconcileTelegramIdentityForChat } from '../services/telegramIdentityReconciliationService';
@@ -642,6 +643,9 @@ bot.on('message', async (msg) => {
       }
 
       // ── Broadcast intercept (Phase 3) — runs before normal AI ──────────────
+      const wasStudentList = await handleTeacherStudentListIfIntended(bot, chatId, messageText, ctx);
+      if (wasStudentList) return;
+
       const wasBroadcast = await handleBroadcastIfIntended(bot, chatId, messageText, ctx);
       if (wasBroadcast) return;
 

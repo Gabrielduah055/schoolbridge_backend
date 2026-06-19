@@ -139,6 +139,20 @@ const splitList = (value: any) => toText(value)
   .map((item: string) => item.trim())
   .filter(Boolean);
 
+const parseSubjectAssignments = (value: any) => splitList(value)
+  .map((item: string) => {
+    const [className, ...subjectParts] = item.split(':');
+    const subject = subjectParts.join(':').trim();
+    return {
+      className: className?.trim() || '',
+      subject
+    };
+  })
+  .filter((item: { className: string; subject: string }) => item.className && item.subject);
+
+const formatSubjectAssignments = (assignments: Array<{ className: string; subject: string }>) =>
+  assignments.map((item) => `${item.className}: ${item.subject}`).join('; ');
+
 const readSheetRows = (filePath: string) => {
   const workbook = XLSX.readFile(filePath);
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
@@ -290,7 +304,9 @@ router.get('/teachers', requirePermission(PERMISSIONS.TEACHERS_VIEW), async (_re
         phone: teacher.phone,
         email: teacher.email || '',
         assignedClasses: classes.map((item: any) => item.displayName || item.className || item.name).filter(Boolean),
-        subject: teacher.subject || '',
+        classTeacherClasses: classes.map((item: any) => item.displayName || item.className || item.name).filter(Boolean),
+        subjectAssignments: teacher.subjectAssignments || [],
+        subject: teacher.subject || formatSubjectAssignments(teacher.subjectAssignments || []),
         channelIdentityStatus: await getIdentityStatus(teacher.phone, 'teacher'),
         lastConversationAt: await getLastConversationAt(teacher.phone)
       };
@@ -318,23 +334,38 @@ router.post('/teachers/import', requirePermission(PERMISSIONS.TEACHERS_MANAGE), 
       const fullName = toText(getColumnValue(row, ['Teacher Name', 'Full Name', 'Name', 'fullName', 'teacher']));
       const phone = normalizePhoneNumber(toText(getColumnValue(row, ['Phone', 'Teacher Phone', 'Contact', 'phone'])));
       const email = toText(getColumnValue(row, ['Email', 'Teacher Email', 'email']));
-      const subject = toText(getColumnValue(row, [
+      const teaches = toText(getColumnValue(row, [
+        'Teaches',
+        'Teaching Assignments',
+        'Subject Assignments',
+        'Teaching Area',
+        'What They Teach',
+        'Subjects By Class',
+        'subjectsByClass'
+      ]));
+      const subjectFallback = toText(getColumnValue(row, [
         'Subject',
         'Subjects',
         'Teaching Subject',
-        'Teaching Area',
-        'What They Teach',
-        'Teaches',
         'subject'
       ]));
+      const subjectAssignments = parseSubjectAssignments(teaches || subjectFallback);
+      const subject = subjectAssignments.length > 0
+        ? formatSubjectAssignments(subjectAssignments)
+        : subjectFallback;
       const assignedClasses = splitList(getColumnValue(row, [
+        'Class Teacher Of',
+        'Class Teacher Class',
+        'Class Teacher Classes',
+        'Class Teacher',
+        'Assigned Class',
+        'Assigned Classes',
+        'Assigned',
+        'Class Assigned',
+        'Classes Assigned',
         'Class',
         'Classes',
         'Class Name',
-        'Assigned Class',
-        'Assigned Classes',
-        'Class Assigned',
-        'Classes Assigned',
         'className'
       ]));
 
@@ -347,7 +378,7 @@ router.post('/teachers/import', requirePermission(PERMISSIONS.TEACHERS_MANAGE), 
       const existing = await Teacher.findOne({ phone });
       const teacher = await Teacher.findOneAndUpdate(
         { phone },
-        { fullName, phone, email, subject, role: 'teacher', active: true },
+        { fullName, phone, email, subject, subjectAssignments, role: 'teacher', active: true },
         { upsert: true, new: true }
       );
 
@@ -361,6 +392,22 @@ router.post('/teachers/import', requirePermission(PERMISSIONS.TEACHERS_MANAGE), 
             displayName: className,
             teacherId: teacher._id,
             active: true
+          },
+          { upsert: true, new: true }
+        );
+      }
+
+      for (const assignment of subjectAssignments) {
+        await ClassModel.findOneAndUpdate(
+          { $or: [{ className: assignment.className }, { name: assignment.className }] },
+          {
+            $set: {
+              schoolId: schoolFilter(req).schoolId,
+              name: assignment.className,
+              className: assignment.className,
+              displayName: assignment.className,
+              active: true
+            }
           },
           { upsert: true, new: true }
         );

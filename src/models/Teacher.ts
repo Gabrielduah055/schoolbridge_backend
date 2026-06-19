@@ -1,10 +1,16 @@
 import mongoose, { Schema, Document } from 'mongoose';
 
+export interface TeacherSubjectAssignment {
+  className: string;
+  subject: string;
+}
+
 export interface ITeacher extends Document {
   fullName: string;
   phone: string;        // normalized to 0XXXXXXXXX format
   email?: string;
   subject?: string;
+  subjectAssignments?: TeacherSubjectAssignment[];
   role: 'teacher';
   active: boolean;
   createdAt: Date;
@@ -23,6 +29,13 @@ const TeacherSchema = new Schema<ITeacher>(
     },
     email: { type: String, default: '', trim: true },
     subject: { type: String, default: '', trim: true },
+    subjectAssignments: {
+      type: [{
+        className: { type: String, required: true, trim: true },
+        subject: { type: String, required: true, trim: true }
+      }],
+      default: []
+    },
     role: { type: String, enum: ['teacher'], default: 'teacher' },
     active: { type: Boolean, default: true, index: true }
   },
