@@ -336,6 +336,7 @@ const handleContactMessage = async (msg: TelegramBot.Message) => {
   const contact   = msg.contact;
 
   if (!contact?.phone_number) return;
+  await getOrCreateSession(msg);
 
   // Reject forwarded contacts — must be the user's own number
   if (!contact.user_id || !msg.from?.id || contact.user_id !== msg.from.id) {
@@ -606,6 +607,7 @@ bot.on('message', async (msg) => {
 
     // No session at all → prompt for phone
     if (!session) {
+      await getOrCreateSession(msg);
       await sendInitialVerificationRequest(chatId, msg.from?.first_name || 'there');
       return;
     }
@@ -620,6 +622,7 @@ bot.on('message', async (msg) => {
     await reconcileTelegramIdentityForChat(chatId);
     session = await getSession(chatId);
     if (!session) {
+      await getOrCreateSession(msg);
       await sendInitialVerificationRequest(chatId, msg.from?.first_name || 'there');
       return;
     }
