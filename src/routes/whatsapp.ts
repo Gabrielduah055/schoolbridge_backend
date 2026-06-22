@@ -1,9 +1,12 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { Types } from 'mongoose';
+import ChannelAccount from '../models/ChannelAccount';
 import Conversation from '../models/Conversation';
+import DeliveryLog from '../models/DeliveryLog';
 import Message from '../models/Message';
 import WebhookEvent from '../models/WebhookEvent';
+import WhatsAppIdentity from '../models/WhatsAppIdentity';
 import { DEFAULT_SCHOOL_ID } from '../config/school';
 import { WASENDER_PROVIDER, wasenderConfig } from '../config/wasender';
 import {
@@ -37,7 +40,18 @@ const isValidWebhookSecret = (req: Request) => {
 };
 
 const isValidDiagnosticSecret = (req: Request) => {
-  return Boolean(wasenderConfig.webhookSecret) && isValidWebhookSecret(req);
+  if (!wasenderConfig.diagnosticSecret) return false;
+
+  const candidates = [
+    req.header('x-whatsapp-diagnostic-secret'),
+    req.header('x-webhook-signature'),
+    req.header('x-wasender-webhook-secret'),
+    req.header('x-webhook-secret'),
+    req.header('x-wasender-signature'),
+    req.query.secret?.toString()
+  ].filter(Boolean);
+
+  return candidates.includes(wasenderConfig.diagnosticSecret);
 };
 
 const markWebhookEvent = async (
@@ -56,6 +70,84 @@ const markWebhookEvent = async (
     }
   );
 };
+
+router.get('/health', (_req: Request, res: Response) => {
+  res.json({
+    ok: true,
+    route: '/api/whatsapp',
+    provider: WASENDER_PROVIDER,
+    configured: {
+      apiToken: Boolean(wasenderConfig.token),
+      baseUrl: wasenderConfig.baseUrl,
+      sessionId: Boolean(wasenderConfig.sessionId),
+      webhookSecret: Boolean(wasenderConfig.webhookSecret),
+      diagnosticSecret: Boolean(wasenderConfig.diagnosticSecret)
+    }
+  });
+});
+
+router.get('/diagnostics', async (req: Request, res: Response) => {
+  if (!isValidDiagnosticSecret(req)) {
+    res.status(403).json({ error: 'Invalid or missing diagnostic secret' });
+    return;
+  }
+
+  try {
+    const [channelAccount, webhookEvents, deliveryLogs, messages, identities] = await Promise.all([
+      ChannelAccount.findOne({
+        schoolId: DEFAULT_SCHOOL_ID,
+        channel: 'whatsapp',
+        provider: WASENDER_PROVIDER
+      }).sort({ updatedAt: -1 }).lean(),
+      WebhookEvent.find({
+        schoolId: DEFAULT_SCHOOL_ID,
+        channel: 'whatsapp',
+        provider: WASENDER_PROVIDER
+      })
+        .sort({ createdAt: -1 })
+        .limit(10)
+        .select('providerEventId eventType status errorMessage processedAt createdAt updatedAt rawPayload')
+        .lean(),
+      DeliveryLog.find({
+        schoolId: DEFAULT_SCHOOL_ID,
+        channel: 'whatsapp',
+        provider: WASENDER_PROVIDER
+      })
+        .sort({ createdAt: -1 })
+        .limit(10)
+        .select('messageId providerMessageId eventType status errorMessage createdAt rawPayload')
+        .lean(),
+      Message.find({ channel: 'whatsapp' })
+        .sort({ createdAt: -1 })
+        .limit(10)
+        .select('conversationId direction senderRole status providerMessageId body createdAt sentAt')
+        .lean(),
+      WhatsAppIdentity.find({})
+        .sort({ updatedAt: -1 })
+        .limit(10)
+        .select('phone normalizedPhone status displayName externalChatId lastInboundAt lastOutboundAt updatedAt')
+        .lean()
+    ]);
+
+    res.json({
+      ok: true,
+      configured: {
+        apiToken: Boolean(wasenderConfig.token),
+        baseUrl: wasenderConfig.baseUrl,
+        sessionId: Boolean(wasenderConfig.sessionId),
+        webhookSecret: Boolean(wasenderConfig.webhookSecret),
+        diagnosticSecret: Boolean(wasenderConfig.diagnosticSecret)
+      },
+      channelAccount,
+      webhookEvents,
+      deliveryLogs,
+      messages,
+      identities
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message || 'Failed to load WhatsApp diagnostics' });
+  }
+});
 
 router.post('/test-send', async (req: Request, res: Response) => {
   if (!isValidDiagnosticSecret(req)) {
@@ -91,6 +183,7 @@ router.post('/webhook', async (req: Request, res: Response) => {
 
   const payload = req.body as Record<string, any>;
   const normalized = normalizeWasenderWebhook(payload);
+  let webhookEventId: Types.ObjectId | null = null;
 
   try {
     const existing = await WebhookEvent.findOne({
@@ -114,6 +207,7 @@ router.post('/webhook', async (req: Request, res: Response) => {
       rawPayload: payload,
       status: 'received'
     });
+    webhookEventId = webhookEvent._id as Types.ObjectId;
 
     if (normalized.ignoredReason || !normalized.inbound) {
       await markWebhookEvent(webhookEvent._id as Types.ObjectId, 'ignored', normalized.ignoredReason || 'ignored');
@@ -187,6 +281,13 @@ router.post('/webhook', async (req: Request, res: Response) => {
       handled: resolved ? 'known_replied' : 'visitor_replied'
     });
   } catch (error: any) {
+    if (webhookEventId) {
+      await markWebhookEvent(
+        webhookEventId,
+        'failed',
+        error?.message || 'WhatsApp webhook processing failed'
+      ).catch((markError) => logger.error({ err: markError }, 'Failed to mark WhatsApp webhook event failed'));
+    }
     logger.error({ err: error }, 'WhatsApp webhook processing failed');
     res.status(500).json({ error: error?.message || 'WhatsApp webhook processing failed' });
   }
