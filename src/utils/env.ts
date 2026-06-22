@@ -76,6 +76,26 @@ const ENV_VARS: EnvVar[] = [
     key:      'FRONTEND_URL',
     required: false,
     hint:     'Dashboard origin for CORS (e.g. https://your-dashboard.vercel.app)'
+  },
+  {
+    key:      'WASENDER_API_TOKEN',
+    required: false,
+    hint:     'WasenderAPI session bearer token for WhatsApp Phase 1'
+  },
+  {
+    key:      'WASENDER_BASE_URL',
+    required: false,
+    hint:     'WasenderAPI base URL, defaults to https://www.wasenderapi.com'
+  },
+  {
+    key:      'WASENDER_SESSION_ID',
+    required: false,
+    hint:     'Safe Wasender session identifier/name for channel health display'
+  },
+  {
+    key:      'WASENDER_WEBHOOK_SECRET',
+    required: false,
+    hint:     'Optional shared secret checked on incoming WhatsApp webhooks'
   }
 ];
 

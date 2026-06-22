@@ -18,10 +18,12 @@ import Student from '../models/Students';
 import Teacher from '../models/Teacher';
 import ClassModel from '../models/Class';
 import TelegramIdentity from '../models/TelegramIdentity';
+import WhatsAppIdentity from '../models/WhatsAppIdentity';
 import { cleanBroadcastText, createDraft, previewRecipients, sendApprovedBroadcast } from '../services/communication/broadcastService';
 import { recordOutgoingMessage } from '../services/communication/messageService';
 import { logDelivery } from '../services/communication/deliveryService';
 import { createTicket } from '../services/communication/handoverService';
+import { refreshWhatsAppChannelAccount, sendWhatsAppText } from '../channels/whatsapp/whatsappAdapter';
 import { requirePermission } from '../middleware/authorization';
 import { PERMISSIONS } from '../config/permissions';
 import { DEFAULT_SCHOOL_ID } from '../config/school';
@@ -204,8 +206,18 @@ const getIdentityStatus = async (phone: string, role?: 'parent' | 'teacher') => 
   return identity ? 'connected' : 'not_connected';
 };
 
+const getWhatsAppIdentityStatus = async (phone: string, role?: 'parent' | 'teacher') => {
+  if (!phone) return 'not_connected';
+  const identity = await WhatsAppIdentity.findOne({
+    normalizedPhone: normalizePhoneNumber(phone),
+    ...(role ? { status: role } : {})
+  });
+  return identity ? 'connected' : 'not_connected';
+};
+
 router.get('/channel-accounts', requirePermission(PERMISSIONS.CHANNELS_VIEW), async (req: Request, res: Response) => {
   try {
+    await refreshWhatsAppChannelAccount();
     const accounts = await ChannelAccount.find(schoolFilter(req)).sort({ channel: 1 });
     res.json(accounts);
   } catch {
@@ -274,6 +286,7 @@ router.get('/parents', requirePermission(PERMISSIONS.PARENTS_VIEW), async (req: 
         classes: [],
         preferredChannel: 'telegram',
         channelIdentityStatus: await getIdentityStatus(phone, 'parent'),
+        whatsappIdentityStatus: await getWhatsAppIdentityStatus(phone, 'parent'),
         lastConversationAt: await getLastConversationAt(phone)
       };
 
@@ -308,6 +321,7 @@ router.get('/teachers', requirePermission(PERMISSIONS.TEACHERS_VIEW), async (_re
         subjectAssignments: teacher.subjectAssignments || [],
         subject: teacher.subject || formatSubjectAssignments(teacher.subjectAssignments || []),
         channelIdentityStatus: await getIdentityStatus(teacher.phone, 'teacher'),
+        whatsappIdentityStatus: await getWhatsAppIdentityStatus(teacher.phone, 'teacher'),
         lastConversationAt: await getLastConversationAt(teacher.phone)
       };
     }));
@@ -572,7 +586,8 @@ router.get('/classes/:id/parents', requirePermission(PERMISSIONS.CLASSES_VIEW), 
         parentName: student.parentName || 'Parent',
         parentPhone: normalizePhoneNumber(student.parentPhone),
         parentEmail: student.parentEmail || '',
-        channelIdentityStatus: await getIdentityStatus(student.parentPhone, 'parent')
+        channelIdentityStatus: await getIdentityStatus(student.parentPhone, 'parent'),
+        whatsappIdentityStatus: await getWhatsAppIdentityStatus(student.parentPhone, 'parent')
       })));
 
     res.json({ className, parents });
@@ -648,14 +663,16 @@ router.post('/conversations/:id/reply', requirePermission(PERMISSIONS.CONVERSATI
       return;
     }
 
-    if (conversation.channel !== 'telegram') {
+    if (!['telegram', 'whatsapp'].includes(conversation.channel)) {
       res.status(400).json({ error: 'Manual replies for this channel are not implemented yet.' });
       return;
     }
 
+    const replyChannel = conversation.channel as 'telegram' | 'whatsapp';
+
     const message = await recordOutgoingMessage({
       schoolId: conversation.schoolId,
-      channel: 'telegram',
+      channel: replyChannel,
       conversationId: conversation._id as Types.ObjectId,
       senderUserId: authObjectId(req),
       senderName: authName(req),
@@ -666,13 +683,28 @@ router.post('/conversations/:id/reply', requirePermission(PERMISSIONS.CONVERSATI
     });
 
     try {
-      const sent = await bot.sendMessage(conversation.externalChatId, body);
+      let providerMessageId = '';
+      let rawPayload: Record<string, unknown>;
+
+      if (replyChannel === 'telegram') {
+        const sent = await bot.sendMessage(conversation.externalChatId, body);
+        providerMessageId = sent.message_id.toString();
+        rawPayload = sent as unknown as Record<string, unknown>;
+      } else {
+        const sent = await sendWhatsAppText({
+          to: conversation.participantPhone || conversation.externalChatId,
+          text: body
+        });
+        providerMessageId = sent.providerMessageId;
+        rawPayload = sent.raw;
+      }
+
       await Message.updateOne(
         { _id: message._id },
         {
           $set: {
             status: 'sent',
-            providerMessageId: sent.message_id.toString(),
+            providerMessageId,
             sentAt: new Date()
           }
         }
@@ -691,12 +723,12 @@ router.post('/conversations/:id/reply', requirePermission(PERMISSIONS.CONVERSATI
       await logDelivery({
         messageId: message._id as Types.ObjectId,
         schoolId: conversation.schoolId,
-        channel: 'telegram',
-        provider: 'telegram_bot',
-        providerMessageId: sent.message_id.toString(),
+        channel: replyChannel,
+        provider: replyChannel === 'telegram' ? 'telegram_bot' : 'wasenderapi',
+        providerMessageId,
         eventType: 'dashboard_manual_reply_sent',
         status: 'sent',
-        rawPayload: sent as unknown as Record<string, unknown>
+        rawPayload
       });
 
       const updatedMessage = await Message.findById(message._id);
@@ -713,13 +745,13 @@ router.post('/conversations/:id/reply', requirePermission(PERMISSIONS.CONVERSATI
       await logDelivery({
         messageId: message._id as Types.ObjectId,
         schoolId: conversation.schoolId,
-        channel: 'telegram',
-        provider: 'telegram_bot',
+        channel: replyChannel,
+        provider: replyChannel === 'telegram' ? 'telegram_bot' : 'wasenderapi',
         eventType: 'dashboard_manual_reply_failed',
         status: 'failed',
-        errorMessage: error?.message || 'Telegram send failed'
+        errorMessage: error?.message || `${replyChannel} send failed`
       });
-      res.status(502).json({ error: 'Failed to send Telegram reply' });
+      res.status(502).json({ error: `Failed to send ${replyChannel} reply` });
     }
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Failed to send conversation reply' });
