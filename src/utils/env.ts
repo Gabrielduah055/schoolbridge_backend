@@ -96,6 +96,11 @@ const ENV_VARS: EnvVar[] = [
     key:      'WASENDER_WEBHOOK_SECRET',
     required: false,
     hint:     'Optional shared secret checked on incoming WhatsApp webhooks'
+  },
+  {
+    key:      'WASENDER_DIAGNOSTIC_SECRET',
+    required: false,
+    hint:     'Optional secret for /api/whatsapp/diagnostics and /api/whatsapp/test-send; defaults to WASENDER_WEBHOOK_SECRET'
   }
 ];
 
