@@ -63,3 +63,23 @@ export const getPhoneLookupCandidates = (value: string): string[] => {
 
   return Array.from(candidates).filter(Boolean);
 };
+
+export const toGhanaE164Phone = (value: string): string => {
+  const normalized = normalizePhoneNumber(value);
+  if (!normalized) return '';
+
+  if (normalized.startsWith('0') && normalized.length === 10) {
+    return `+233${normalized.slice(1)}`;
+  }
+
+  const digits = digitsOnly(value);
+  if (digits.startsWith('233') && digits.length === 12) {
+    return `+${digits}`;
+  }
+
+  if (value.trim().startsWith('+') && digits.length >= 10) {
+    return `+${digits}`;
+  }
+
+  return normalized;
+};

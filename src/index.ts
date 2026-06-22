@@ -17,6 +17,7 @@ import knowledgeRoutes from './routes/knowledge';
 import chatRoutes from './routes/chat';
 import studentRoutes from './routes/students';
 import communicationRoutes from './routes/communication';
+import whatsappRoutes from './routes/whatsapp';
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -35,6 +36,7 @@ app.use(express.urlencoded({ extended: false }));
 // Public routes
 app.use('/api/chat', chatRoutes);
 app.use('/api/auth', authRoutes);
+app.use('/api/whatsapp', whatsappRoutes);
 
 app.get('/', (req, res) => {
   res.json({ message: 'SchoolBridge API is running 🏫🚀' });
