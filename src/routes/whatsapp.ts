@@ -13,11 +13,8 @@ import {
   sendWhatsAppText,
   upsertWhatsAppIdentity
 } from '../channels/whatsapp/whatsappAdapter';
-import { openOrCreateConversation, markConversationStatus } from '../services/communication/conversationService';
 import { handleIncomingMessage } from '../services/communication/communicationRouter';
 import { logDelivery } from '../services/communication/deliveryService';
-import { recordIncomingMessage } from '../services/communication/messageService';
-import type { ResolvedSender } from '../services/communication/types';
 import logger from '../utils/logger';
 
 const router = Router();
@@ -52,42 +49,6 @@ const markWebhookEvent = async (
       }
     }
   );
-};
-
-const recordUnknownWhatsAppInbound = async (
-  inbound: NonNullable<ReturnType<typeof normalizeWasenderWebhook>['inbound']>,
-  providerEventObjectId: Types.ObjectId
-) => {
-  const sender: ResolvedSender = {
-    role: 'visitor',
-    name: inbound.senderName || 'WhatsApp Visitor',
-    phone: inbound.participantPhone || ''
-  };
-
-  const conversation = await openOrCreateConversation(inbound, sender);
-  const message = await recordIncomingMessage({
-    inbound,
-    conversationId: conversation._id as Types.ObjectId,
-    sender
-  });
-
-  await upsertWhatsAppIdentity(inbound, 'visitor');
-
-  await logDelivery({
-    messageId: message._id as Types.ObjectId,
-    schoolId: inbound.schoolId,
-    channel: 'whatsapp',
-    provider: WASENDER_PROVIDER,
-    providerMessageId: inbound.providerMessageId,
-    eventType: 'inbound_unknown_recorded',
-    status: 'received',
-    rawPayload: {
-      webhookEventId: providerEventObjectId.toString(),
-      reason: 'unknown_number_no_ai_reply'
-    }
-  });
-
-  await markConversationStatus(conversation._id.toString(), 'open');
 };
 
 router.post('/webhook', async (req: Request, res: Response) => {
@@ -133,15 +94,9 @@ router.post('/webhook', async (req: Request, res: Response) => {
 
     await refreshWhatsAppChannelAccount();
 
-    if (!resolved) {
-      await recordUnknownWhatsAppInbound(inbound, webhookEvent._id as Types.ObjectId);
-      await markWebhookEvent(webhookEvent._id as Types.ObjectId, 'processed', 'unknown_number_no_ai_reply');
-      res.json({ ok: true, handled: 'unknown_recorded_no_ai_reply' });
-      return;
-    }
-
-    await upsertWhatsAppIdentity(inbound, resolved.role, resolved.refs);
-    const response = await handleIncomingMessage(inbound, resolved.role);
+    const participantRole = resolved?.role ?? 'visitor';
+    await upsertWhatsAppIdentity(inbound, participantRole, resolved?.refs ?? {});
+    const response = await handleIncomingMessage(inbound, participantRole);
 
     if (response.outgoingMessageId) {
       try {
@@ -194,7 +149,11 @@ router.post('/webhook', async (req: Request, res: Response) => {
     }
 
     await markWebhookEvent(webhookEvent._id as Types.ObjectId, 'processed');
-    res.json({ ok: true, conversationId: response.conversationId });
+    res.json({
+      ok: true,
+      conversationId: response.conversationId,
+      handled: resolved ? 'known_replied' : 'visitor_replied'
+    });
   } catch (error: any) {
     logger.error({ err: error }, 'WhatsApp webhook processing failed');
     res.status(500).json({ error: error?.message || 'WhatsApp webhook processing failed' });
