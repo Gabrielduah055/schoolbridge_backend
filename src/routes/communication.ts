@@ -27,7 +27,7 @@ import { refreshWhatsAppChannelAccount, sendWhatsAppText } from '../channels/wha
 import { requirePermission } from '../middleware/authorization';
 import { PERMISSIONS } from '../config/permissions';
 import { DEFAULT_SCHOOL_ID } from '../config/school';
-import { normalizePhoneNumber } from '../utils/phone';
+import { normalizePhoneNumber, toGhanaE164Phone } from '../utils/phone';
 
 const router = Router();
 const broadcastUploadDir = path.join('uploads', 'broadcasts');
@@ -692,7 +692,7 @@ router.post('/conversations/:id/reply', requirePermission(PERMISSIONS.CONVERSATI
         rawPayload = sent as unknown as Record<string, unknown>;
       } else {
         const sent = await sendWhatsAppText({
-          to: conversation.participantPhone || conversation.externalChatId,
+          to: toGhanaE164Phone(conversation.participantPhone || '') || conversation.externalChatId,
           text: body
         });
         providerMessageId = sent.providerMessageId;

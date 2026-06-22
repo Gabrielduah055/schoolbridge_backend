@@ -15,6 +15,7 @@ import {
 } from '../channels/whatsapp/whatsappAdapter';
 import { handleIncomingMessage } from '../services/communication/communicationRouter';
 import { logDelivery } from '../services/communication/deliveryService';
+import { toGhanaE164Phone } from '../utils/phone';
 import logger from '../utils/logger';
 
 const router = Router();
@@ -101,7 +102,7 @@ router.post('/webhook', async (req: Request, res: Response) => {
     if (response.outgoingMessageId) {
       try {
         const sent = await sendWhatsAppText({
-          to: inbound.participantPhone || inbound.externalChatId,
+          to: toGhanaE164Phone(inbound.participantPhone || '') || inbound.externalChatId,
           text: response.body
         });
 
