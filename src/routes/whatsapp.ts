@@ -24,6 +24,7 @@ const isValidWebhookSecret = (req: Request) => {
   if (!wasenderConfig.webhookSecret) return true;
 
   const candidates = [
+    req.header('x-webhook-signature'),
     req.header('x-wasender-webhook-secret'),
     req.header('x-webhook-secret'),
     req.header('x-wasender-signature'),
@@ -33,6 +34,10 @@ const isValidWebhookSecret = (req: Request) => {
   // WasenderAPI docs do not currently describe a signature header. This optional
   // shared-secret check lets deployments protect the endpoint when configured.
   return candidates.includes(wasenderConfig.webhookSecret);
+};
+
+const isValidDiagnosticSecret = (req: Request) => {
+  return Boolean(wasenderConfig.webhookSecret) && isValidWebhookSecret(req);
 };
 
 const markWebhookEvent = async (
@@ -51,6 +56,32 @@ const markWebhookEvent = async (
     }
   );
 };
+
+router.post('/test-send', async (req: Request, res: Response) => {
+  if (!isValidDiagnosticSecret(req)) {
+    res.status(403).json({ error: 'Invalid or missing diagnostic secret' });
+    return;
+  }
+
+  const to = req.body.to?.toString().trim();
+  const text = req.body.text?.toString().trim() || 'SchoolBridge WhatsApp test message';
+
+  if (!to) {
+    res.status(400).json({ error: 'to is required' });
+    return;
+  }
+
+  try {
+    const sent = await sendWhatsAppText({ to, text });
+    res.json({ ok: true, sent });
+  } catch (error: any) {
+    logger.error({ err: error }, 'WhatsApp test send failed');
+    res.status(502).json({
+      ok: false,
+      error: error?.message || 'WhatsApp test send failed'
+    });
+  }
+});
 
 router.post('/webhook', async (req: Request, res: Response) => {
   if (!isValidWebhookSecret(req)) {
