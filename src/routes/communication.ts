@@ -171,18 +171,18 @@ const authObjectId = (req: Request) =>
 
 const authName = (req: Request) => req.authUser?.name || 'Dashboard User';
 
-const parseTelegramChannels = (value: unknown): Array<'telegram'> => {
+const parseBroadcastChannels = (value: unknown): Array<'telegram' | 'whatsapp'> => {
   const channels = Array.isArray(value)
     ? value
     : typeof value === 'string'
       ? value.split(',')
       : ['telegram'];
 
-  const telegramChannels = channels
+  const broadcastChannels = channels
     .map((channel) => channel?.toString().trim())
-    .filter((channel): channel is 'telegram' => channel === 'telegram');
+    .filter((channel): channel is 'telegram' | 'whatsapp' => ['telegram', 'whatsapp'].includes(channel));
 
-  return telegramChannels.length > 0 ? telegramChannels : ['telegram'];
+  return broadcastChannels.length > 0 ? Array.from(new Set(broadcastChannels)) : ['telegram'];
 };
 
 const getLastConversationAt = async (phone: string) => {
@@ -1092,7 +1092,7 @@ router.post('/broadcasts/draft', requirePermission(PERMISSIONS.BROADCASTS_CREATE
       originalText,
       draftedText: req.body.draftedText,
       attachments: attachment,
-      channels: parseTelegramChannels(req.body.channels)
+      channels: parseBroadcastChannels(req.body.channels)
     });
 
     res.status(201).json(broadcast);

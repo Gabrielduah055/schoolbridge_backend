@@ -7,14 +7,18 @@ import Class from '../../models/Class';
 import Student from '../../models/Students';
 import Teacher from '../../models/Teacher';
 import TelegramIdentity from '../../models/TelegramIdentity';
+import WhatsAppIdentity from '../../models/WhatsAppIdentity';
 import { chatWithSchoolAgent } from '../../agents/schoolAgent';
 import { DEFAULT_SCHOOL_ID } from '../../config/school';
+import { WASENDER_PROVIDER } from '../../config/wasender';
 import { normalizePhoneNumber } from '../../utils/phone';
+import { sendWhatsAppText } from '../../channels/whatsapp/whatsappAdapter';
 import { logDelivery } from './deliveryService';
 import { findParentTelegramIdentityByPhone } from '../telegramIdentityReconciliationService';
 import type { AdminRole } from '../../models/AdminUser';
 
 type BroadcastAudience = 'whole_school' | 'class' | 'individual' | 'individual_parent' | 'teachers' | 'parents';
+type BroadcastChannel = 'telegram' | 'whatsapp';
 
 interface CreateDraftArgs {
   schoolId?: string;
@@ -31,7 +35,7 @@ interface CreateDraftArgs {
   originalText: string;
   draftedText?: string;
   attachments?: BroadcastAttachment[];
-  channels?: Array<'telegram' | 'whatsapp'>;
+  channels?: BroadcastChannel[];
 }
 
 interface BroadcastAttachment {
@@ -65,6 +69,8 @@ export interface RecipientPreviewItem {
   className: string;
   telegramLinked: boolean;
   telegramChatId: string | null;
+  whatsappLinked: boolean;
+  whatsappChatId: string | null;
   canReceiveNow: boolean;
   reasonIfNotReachable: string | null;
 }
@@ -74,8 +80,8 @@ export interface RecipientPreview {
   totalContacts: number;
   telegramReachable: number;
   telegramMissing: number;
-  whatsappReachable: 0;
-  whatsappMissing: 0;
+  whatsappReachable: number;
+  whatsappMissing: number;
   reachableNow: number;
   unreachableNow: number;
   recipients: RecipientPreviewItem[];
@@ -147,7 +153,7 @@ export const createDraft = async ({
     attachments,
     approvalStatus: 'pending_approval',
     status: 'pending_approval',
-    channels: channels.filter((channel) => channel === 'telegram')
+    channels: channels.filter((channel): channel is BroadcastChannel => ['telegram', 'whatsapp'].includes(channel))
   });
 };
 
@@ -192,6 +198,69 @@ const teacherRecipients = async () => {
     phone: teacher.phone,
     role: 'teacher' as const
   })));
+};
+
+const findTelegramIdentityForRecipient = async (recipient: RecipientCandidate) => {
+  if (recipient.role === 'parent') {
+    return findParentTelegramIdentityByPhone(recipient.phone);
+  }
+
+  return TelegramIdentity.findOne({
+    phone: normalizePhoneNumber(recipient.phone),
+    status: recipient.role
+  });
+};
+
+const findWhatsAppIdentityForRecipient = async (recipient: RecipientCandidate) =>
+  WhatsAppIdentity.findOne({
+    normalizedPhone: normalizePhoneNumber(recipient.phone),
+    status: recipient.role
+  });
+
+const createRecipientRow = async (
+  broadcast: any,
+  recipient: RecipientCandidate,
+  channel: BroadcastChannel,
+  hasIdentity: boolean,
+  missingReason: string
+) => {
+  const recipientRow = new MessageRecipient({
+    broadcastId: broadcast._id,
+    recipientName: recipient.name,
+    recipientPhone: normalizePhoneNumber(recipient.phone),
+    recipientRole: recipient.role,
+    ...(recipient.studentId ? { studentId: recipient.studentId } : {}),
+    ...(recipient.classId ? { classId: recipient.classId } : {}),
+    channel,
+    status: hasIdentity ? 'pending' : 'skipped',
+    errorMessage: hasIdentity ? '' : missingReason
+  });
+  await recipientRow.save();
+  return recipientRow;
+};
+
+const createBroadcastMessage = async (
+  broadcast: any,
+  recipient: RecipientCandidate,
+  channel: BroadcastChannel,
+  body: string
+) => {
+  const message = new Message({
+    schoolId: broadcast.schoolId || DEFAULT_SCHOOL_ID,
+    channel,
+    direction: 'outgoing',
+    senderRole: broadcast.createdByRole,
+    senderName: broadcast.createdByRole === 'teacher' ? 'Teacher' : 'Admin',
+    body,
+    messageType: 'text',
+    aiGenerated: false,
+    recipientType: 'broadcast',
+    targetClass: recipient.targetClass || broadcast.targetClass || '',
+    status: 'queued',
+    sentAt: new Date()
+  });
+  await message.save();
+  return message;
 };
 
 export const resolveRecipients = async (broadcast: {
@@ -252,8 +321,12 @@ export const sendApprovedBroadcast = async (broadcastId: string, actor?: Broadca
     throw new Error('Broadcast must be approved before sending');
   }
 
-  if (!broadcast.channels.includes('telegram')) {
-    throw new Error('Only Telegram broadcasts are implemented in this MVP');
+  const channels = (broadcast.channels || []).filter((channel): channel is BroadcastChannel =>
+    ['telegram', 'whatsapp'].includes(channel)
+  );
+
+  if (channels.length === 0) {
+    throw new Error('At least one supported broadcast channel is required');
   }
 
   broadcast.status = 'sending';
@@ -268,111 +341,117 @@ export const sendApprovedBroadcast = async (broadcastId: string, actor?: Broadca
   let pendingCount = 0;
 
   for (const recipient of recipients) {
-    const identity = recipient.role === 'parent'
-      ? await findParentTelegramIdentityByPhone(recipient.phone)
-      : await TelegramIdentity.findOne({
-          phone: normalizePhoneNumber(recipient.phone),
-          status: recipient.role
-        });
+    for (const channel of channels) {
+      const identity: any = channel === 'telegram'
+        ? await findTelegramIdentityForRecipient(recipient)
+        : await findWhatsAppIdentityForRecipient(recipient);
+      const missingReason = channel === 'telegram'
+        ? 'No Telegram identity for recipient'
+        : 'No WhatsApp identity for recipient';
+      const recipientRow = await createRecipientRow(
+        broadcast,
+        recipient,
+        channel,
+        Boolean(identity),
+        missingReason
+      );
 
-    const recipientRow = new MessageRecipient({
-      broadcastId: broadcast._id,
-      recipientName: recipient.name,
-      recipientPhone: normalizePhoneNumber(recipient.phone),
-      recipientRole: recipient.role,
-      ...(recipient.studentId ? { studentId: recipient.studentId } : {}),
-      ...(recipient.classId ? { classId: recipient.classId } : {}),
-      channel: 'telegram',
-      status: identity ? 'pending' : 'skipped',
-      errorMessage: identity ? '' : 'No Telegram identity for recipient'
-    });
-    await recipientRow.save();
-
-    if (!identity) {
-      pendingCount++;
-      continue;
-    }
-
-    const message = new Message({
-      schoolId: broadcast.schoolId || DEFAULT_SCHOOL_ID,
-      channel: 'telegram',
-      direction: 'outgoing',
-      senderRole: broadcast.createdByRole,
-      senderName: broadcast.createdByRole === 'teacher' ? 'Teacher' : 'Admin',
-      body,
-      messageType: 'text',
-      aiGenerated: false,
-      recipientType: 'broadcast',
-      targetClass: recipient.targetClass || broadcast.targetClass || '',
-      status: 'queued',
-      sentAt: new Date()
-    });
-    await message.save();
-
-    recipientRow.messageId = message._id as Types.ObjectId;
-
-    try {
-      const sent = await bot.sendMessage(identity.chatId, body);
-
-      for (const attachment of attachments) {
-        await bot.sendDocument(
-          identity.chatId,
-          attachment.filePath,
-          {},
-          {
-            filename: attachment.originalName || attachment.fileName,
-            contentType: attachment.mimeType || undefined
-          }
-        );
+      if (!identity) {
+        pendingCount++;
+        continue;
       }
 
-      message.status = 'sent';
-      message.providerMessageId = sent.message_id.toString();
-      await message.save();
+      const message = await createBroadcastMessage(broadcast, recipient, channel, body);
+      recipientRow.messageId = message._id as Types.ObjectId;
 
-      recipientRow.status = 'sent';
-      recipientRow.providerMessageId = sent.message_id.toString();
-      await recipientRow.save();
+      try {
+        let providerMessageId = '';
+        let rawPayload: Record<string, unknown> | null = null;
+        let provider = '';
 
-      await logDelivery({
-        messageId: message._id as Types.ObjectId,
-        broadcastId: broadcast._id as Types.ObjectId,
-        recipientId: recipientRow._id as Types.ObjectId,
-        schoolId: broadcast.schoolId || DEFAULT_SCHOOL_ID,
-        channel: 'telegram',
-        provider: 'telegram_bot',
-        providerMessageId: sent.message_id.toString(),
-        eventType: 'broadcast_sent',
-        status: 'sent',
-        rawPayload: sent as unknown as Record<string, unknown>
-      });
+        if (channel === 'telegram') {
+          const sent = await bot.sendMessage(identity.chatId, body);
 
-      sentCount++;
-    } catch (error: any) {
-      message.status = 'failed';
-      await message.save();
+          for (const attachment of attachments) {
+            await bot.sendDocument(
+              identity.chatId,
+              attachment.filePath,
+              {},
+              {
+                filename: attachment.originalName || attachment.fileName,
+                contentType: attachment.mimeType || undefined
+              }
+            );
+          }
 
-      recipientRow.status = 'failed';
-      recipientRow.errorMessage = error?.message || 'Telegram send failed';
-      await recipientRow.save();
+          provider = 'telegram_bot';
+          providerMessageId = sent.message_id.toString();
+          rawPayload = sent as unknown as Record<string, unknown>;
+        } else {
+          const sent = await sendWhatsAppText({
+            to: recipient.phone,
+            text: body
+          });
 
-      await logDelivery({
-        messageId: message._id as Types.ObjectId,
-        broadcastId: broadcast._id as Types.ObjectId,
-        recipientId: recipientRow._id as Types.ObjectId,
-        schoolId: broadcast.schoolId || DEFAULT_SCHOOL_ID,
-        channel: 'telegram',
-        provider: 'telegram_bot',
-        eventType: 'broadcast_failed',
-        status: 'failed',
-        errorMessage: recipientRow.errorMessage
-      });
+          provider = WASENDER_PROVIDER;
+          providerMessageId = sent.providerMessageId;
+          rawPayload = sent.raw;
 
-      failedCount++;
+          await WhatsAppIdentity.updateOne(
+            { _id: identity._id },
+            { $set: { lastOutboundAt: new Date() } }
+          );
+        }
+
+        message.status = 'sent';
+        message.providerMessageId = providerMessageId;
+        await message.save();
+
+        recipientRow.status = 'sent';
+        recipientRow.providerMessageId = providerMessageId;
+        await recipientRow.save();
+
+        await logDelivery({
+          messageId: message._id as Types.ObjectId,
+          broadcastId: broadcast._id as Types.ObjectId,
+          recipientId: recipientRow._id as Types.ObjectId,
+          schoolId: broadcast.schoolId || DEFAULT_SCHOOL_ID,
+          channel,
+          provider,
+          providerMessageId,
+          eventType: 'broadcast_sent',
+          status: 'sent',
+          rawPayload
+        });
+
+        sentCount++;
+      } catch (error: any) {
+        message.status = 'failed';
+        await message.save();
+
+        recipientRow.status = 'failed';
+        recipientRow.errorMessage = error?.message || `${channel === 'telegram' ? 'Telegram' : 'WhatsApp'} send failed`;
+        await recipientRow.save();
+
+        await logDelivery({
+          messageId: message._id as Types.ObjectId,
+          broadcastId: broadcast._id as Types.ObjectId,
+          recipientId: recipientRow._id as Types.ObjectId,
+          schoolId: broadcast.schoolId || DEFAULT_SCHOOL_ID,
+          channel,
+          provider: channel === 'telegram' ? 'telegram_bot' : WASENDER_PROVIDER,
+          eventType: 'broadcast_failed',
+          status: 'failed',
+          errorMessage: recipientRow.errorMessage
+        });
+
+        failedCount++;
+      }
     }
   }
 
   const totalRecipients = recipients.length;
+  const totalDeliveries = recipients.length * channels.length;
   broadcast.sentAt = new Date();
   if (actor && Types.ObjectId.isValid(actor.id)) {
     broadcast.sentBy = new Types.ObjectId(actor.id);
@@ -381,7 +460,7 @@ export const sendApprovedBroadcast = async (broadcastId: string, actor?: Broadca
   }
   const unsuccessfulCount = failedCount + pendingCount;
   broadcast.status =
-    totalRecipients === 0 || sentCount === 0
+    totalDeliveries === 0 || sentCount === 0
       ? 'failed'
       : unsuccessfulCount > 0
         ? 'partially_failed'
@@ -392,6 +471,7 @@ export const sendApprovedBroadcast = async (broadcastId: string, actor?: Broadca
     broadcast,
     deliverySummary: {
       totalRecipients,
+      totalDeliveries,
       sentCount,
       failedCount,
       pendingCount
@@ -418,12 +498,8 @@ export const previewRecipients = async (
   const previewItems: RecipientPreviewItem[] = [];
 
   for (const recipient of recipients) {
-    const identity = recipient.role === 'parent'
-      ? await findParentTelegramIdentityByPhone(recipient.phone)
-      : await TelegramIdentity.findOne({
-          phone: normalizePhoneNumber(recipient.phone),
-          status: recipient.role
-        });
+    const telegramIdentity = await findTelegramIdentityForRecipient(recipient);
+    const whatsappIdentity = await findWhatsAppIdentityForRecipient(recipient);
 
     previewItems.push({
       name: recipient.name,
@@ -431,25 +507,32 @@ export const previewRecipients = async (
       phone: normalizePhoneNumber(recipient.phone),
       studentName: (recipient as any).studentName || '',
       className: recipient.targetClass || '',
-      telegramLinked: Boolean(identity?.chatId),
-      telegramChatId: identity?.chatId || null,
-      canReceiveNow: Boolean(identity?.chatId),
-      reasonIfNotReachable: identity?.chatId ? null : 'Not connected to the school Telegram bot'
+      telegramLinked: Boolean(telegramIdentity?.chatId),
+      telegramChatId: telegramIdentity?.chatId || null,
+      whatsappLinked: Boolean(whatsappIdentity?.externalChatId),
+      whatsappChatId: whatsappIdentity?.externalChatId || null,
+      canReceiveNow: Boolean(telegramIdentity?.chatId || whatsappIdentity?.externalChatId),
+      reasonIfNotReachable: telegramIdentity?.chatId || whatsappIdentity?.externalChatId
+        ? null
+        : 'Not connected to Telegram or WhatsApp'
     });
   }
 
   const telegramReachable = previewItems.filter((recipient) => recipient.telegramLinked).length;
   const telegramMissing = previewItems.length - telegramReachable;
+  const whatsappReachable = previewItems.filter((recipient) => recipient.whatsappLinked).length;
+  const whatsappMissing = previewItems.length - whatsappReachable;
+  const reachableNow = previewItems.filter((recipient) => recipient.canReceiveNow).length;
 
   return {
     audienceType: input.audienceType,
     totalContacts: previewItems.length,
     telegramReachable,
     telegramMissing,
-    whatsappReachable: 0,
-    whatsappMissing: 0,
-    reachableNow: telegramReachable,
-    unreachableNow: telegramMissing,
+    whatsappReachable,
+    whatsappMissing,
+    reachableNow,
+    unreachableNow: previewItems.length - reachableNow,
     recipients: previewItems
   };
 };
